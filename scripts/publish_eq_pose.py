@@ -7,7 +7,53 @@ from human_articular_space.msg import KP_URDF
 from std_msgs.msg import Int32  # Importa el tipo de mensaje Int32
 from skeleton_3d.msg import Skeleton3D  # Mensaje con info de los KP
 from scipy.spatial.transform import Rotation as R
+from franka_msgs.msg import FrankaState
 
+
+def print_current_pose(current_pose, description="Current Pose"):
+    """
+    Imprime la información de la pose actual en la terminal.
+
+    Args:
+        current_pose (PoseStamped): Mensaje de ROS con la pose actual.
+        description (str): Texto descriptivo para la impresión.
+    """
+    rospy.loginfo(f"{description}:")
+    rospy.loginfo(f"  Position -> x: {current_pose.pose.position.x:.4f}, "
+                  f"y: {current_pose.pose.position.y:.4f}, "
+                  f"z: {current_pose.pose.position.z:.4f}")
+    rospy.loginfo(f"  Orientation (Quaternion) -> x: {current_pose.pose.orientation.x:.4f}, "
+                  f"y: {current_pose.pose.orientation.y:.4f}, "
+                  f"z: {current_pose.pose.orientation.z:.4f}, "
+                  f"w: {current_pose.pose.orientation.w:.4f}")
+
+def smooth_interpolation(current_pose, target_pose, max_step=0.01):
+    """
+    Interpola suavemente entre la pose actual y la pose objetivo.
+
+    Args:
+        current_pose (PoseStamped): Pose actual del efector final.
+        target_pose (PoseStamped): Pose objetivo del efector final.
+        max_step (float): Máximo cambio de posición permitido por ciclo.
+
+    Returns:
+        PoseStamped: Nueva pose suavizada.
+    """
+    new_pose = PoseStamped()
+    new_pose.header.stamp = rospy.Time.now()
+    new_pose.header.frame_id = target_pose.header.frame_id
+    
+    # Interpolación lineal con un límite de velocidad
+    for i, axis in enumerate(["x", "y", "z"]):
+        current = getattr(current_pose.pose.position, axis)
+        target = getattr(target_pose.pose.position, axis)
+        delta = np.clip(target - current, -max_step, max_step)
+        setattr(new_pose.pose.position, axis, current + delta)
+
+    # Mantener la orientación sin cambios
+    new_pose.pose.orientation = target_pose.pose.orientation
+
+    return new_pose
 
 def calculate_quaternion_0_F(vector_target_y, vector_target_z):
     """
@@ -102,24 +148,36 @@ class EquilibriumPosePublisher:
         rospy.Subscriber('/kp_URDF', KP_URDF, self.kp_callback)
         rospy.Subscriber('/hri_state', Int32, self.obtain_hri_state_callback)
         rospy.Subscriber('/skeleton_3D', Skeleton3D, self.obtain_skeleton3D_callback)
+        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_current_pose_callback)
 
         # Inicializar pose con valores por defecto
-        self.eq_pose = PoseStamped()
-        self.eq_pose.header.frame_id = "fr3_link0"
-        self.eq_pose.pose.position.x = 0.25
-        self.eq_pose.pose.position.y = 0.0
-        self.eq_pose.pose.position.z = 0.5
-        self.eq_pose.pose.orientation.x = 0.92
-        self.eq_pose.pose.orientation.y = -0.37
-        self.eq_pose.pose.orientation.z = 0.0
-        self.eq_pose.pose.orientation.w = 0.0
+        self.desired_pose = PoseStamped()
+        self.desired_pose.header.frame_id = "fr3_link0"
+        self.desired_pose.pose.position.x = 0.25
+        self.desired_pose.pose.position.y = 0.0
+        self.desired_pose.pose.position.z = 0.5
+        self.desired_pose.pose.orientation.x = 0.92
+        self.desired_pose.pose.orientation.y = -0.37
+        self.desired_pose.pose.orientation.z = 0.0
+        self.desired_pose.pose.orientation.w = 0.0
 
         self.hri_state = -1
         self.normal_vector = np.array([0, 0, 1])
+        self.last_normal_vector = np.array([0, 0, 1])
 
-        # iniciar mensaje kp
+        # Inicializar vbles
         self.kp_msg = KP_URDF()
-
+        self.current_pose = PoseStamped()
+        
+        self.commanded_pose = PoseStamped()
+        # self.commanded_pose.header.frame_id = "fr3_link0"
+        # self.commanded_pose.pose.position.x = 0.25
+        # self.commanded_pose.pose.position.y = 0.0
+        # self.commanded_pose.pose.position.z = 0.5
+        # self.commanded_pose.pose.orientation.x = 0.92
+        # self.commanded_pose.pose.orientation.y = -0.37
+        # self.commanded_pose.pose.orientation.z = 0.0
+        # self.commanded_pose.pose.orientation.w = 0.0
 
     def obtain_hri_state_callback(self, msg):
         """
@@ -128,10 +186,47 @@ class EquilibriumPosePublisher:
         rospy.loginfo("hri_state actualizado")
         self.hri_state = msg.data
 
+
+    def obtain_current_pose_callback(self, msg):
+        """
+        Función encargada de obtener el FrankaState.O_T_EE y calcular el current_pose como PoseStamped
+        """
+        # Convertir FrankaState a matriz de transformación 4x4
+        current_0_T_EE = np.array(msg.O_T_EE).reshape(4, 4)
+        current_0_T_EE = current_0_T_EE.T # Trasponer para que sea una matriz de transformación típica.
+
+        # Extraer posición y orientación
+        current_position = current_0_T_EE[:3, 3]  # Extraer traslación (X, Y, Z)
+
+        # DEBUG
+        # rospy.loginfo(f"X: {current_0_T_EE[0, 3]}")
+        # rospy.loginfo(f"Y: {current_0_T_EE[1, 3]}")
+        # rospy.loginfo(f"Z: {current_0_T_EE[2, 3]}")
+
+        current_orientation = R.from_matrix(current_0_T_EE[:3, :3])  # Extraer rotación como quaternion
+
+        # Asignar a equilibrium_pose
+        current_pose = PoseStamped()
+        current_pose.header.stamp = rospy.Time.now()
+        current_pose.header.frame_id = "fr3_link0"  # Cambiar si es necesario
+
+        current_pose.pose.position.x = current_position[0]
+        current_pose.pose.position.y = current_position[1]
+        current_pose.pose.position.z = current_position[2]
+
+        current_pose.pose.orientation.x = current_orientation.as_quat()[0]
+        current_pose.pose.orientation.y = current_orientation.as_quat()[1]
+        current_pose.pose.orientation.z = current_orientation.as_quat()[2]
+        current_pose.pose.orientation.w = current_orientation.as_quat()[3]
+
+        # Guardar la pose actual
+        self.current_pose = current_pose
+
     def obtain_skeleton3D_callback(self, msg):
         """
-        Función callback que calcula el vector normal al RShoulder-RElbow-RWrist
+        Función callback que calcula el vector normal a los KP RShoulder-RElbow-RWrist
         """
+        
         keypointsX = np.array([(kp.x, kp.y, kp.z) for kp in msg.keypoints])
 
         kp_R_Shoulder = keypointsX[6]
@@ -140,46 +235,41 @@ class EquilibriumPosePublisher:
 
         if are_kp_valid(kp_R_Shoulder, kp_R_Elbow, kp_R_Wrist):
             self.normal_vector = calculate_normal_vector(kp_R_Shoulder, kp_R_Elbow, kp_R_Wrist)
-
-            # Verificar si la normal contiene valores NaN
-            if np.isnan(self.normal_vector).any():
-                rospy.logwarn("Se detectó NaN en el cálculo de la normal. Se mantiene el vector por defecto.")
-                self.normal_vector = np.array([0, 0, 1])  # Vector por defecto
-
+            self.last_normal_vector = self.normal_vector
         else:
-            rospy.logwarn("Keypoints inválidos. Se mantiene el vector por defecto.")
-            self.normal_vector = np.array([0, 0, 1])  # Vector por defecto
-
+            rospy.logwarn("Se detectó NaN en el cálculo de la normal. No se actualiza el valor.")
+            self.normal_vector = self.last_normal_vector
 
     def kp_callback(self, msg):
+        """
+        Función que pone a disposición del nodo los KP
+        """
         self.kp_msg = msg
     
-    
-    def eq_pose_publisher_callback(self):
+
+    def desired_pose_publisher_callback(self):
         """
         Callback para actualizar el equilibrium pose del Franka en función de los datos de KP_URDF.
 
-        Entrada:
-        - Punto de la muñeca
-
-        Salida:
-        - Equilibrium_Pose
-
         """
         try:
-            self.eq_pose.header.stamp = rospy.Time.now()
+            self.desired_pose.header.stamp = rospy.Time.now()
+            print_current_pose(self.current_pose)
 
+            ## Gestión de casos
             if self.hri_state == 1:
-                rospy.loginfo("En reposo")
-                self.eq_pose.pose.position.x = 0.7
-                self.eq_pose.pose.position.y = 0.0
-                self.eq_pose.pose.position.z = 0.5
-                self.eq_pose.pose.orientation.x = 0.92
-                self.eq_pose.pose.orientation.y = -0.37
-                self.eq_pose.pose.orientation.z = 0.0
-                self.eq_pose.pose.orientation.w = 0.0
+                # Caso 1. Posición 1
+                rospy.loginfo("Punto 1")
+                self.desired_pose.pose.position.x = 0.7
+                self.desired_pose.pose.position.y = 0.0
+                self.desired_pose.pose.position.z = 0.5
+                self.desired_pose.pose.orientation.x = 0.92
+                self.desired_pose.pose.orientation.y = -0.37
+                self.desired_pose.pose.orientation.z = 0.0
+                self.desired_pose.pose.orientation.w = 0.0
 
-                self.pub.publish(self.eq_pose)
+                commanded_pose = smooth_interpolation(self.current_pose, self.desired_pose, max_step=0.1)
+                self.pub.publish(commanded_pose)
 
             elif self.hri_state == 2:
                 rospy.loginfo("Aproximando...")
@@ -194,48 +284,43 @@ class EquilibriumPosePublisher:
 
                 # Calcular posición de F.
                 # normal_vector debe estar normalizado para aplicar la posición correctamente.
-                self.eq_pose.pose.position.x = self.kp_msg.right_wrist.x + self.normal_vector[0]*magnitud
-                self.eq_pose.pose.position.y = self.kp_msg.right_wrist.y + self.normal_vector[1]*magnitud
-                self.eq_pose.pose.position.z = self.kp_msg.right_wrist.z + self.normal_vector[2]*magnitud
+                self.desired_pose.pose.position.x = self.kp_msg.right_wrist.x + self.normal_vector[0]*magnitud
+                self.desired_pose.pose.position.y = self.kp_msg.right_wrist.y + self.normal_vector[1]*magnitud
+                self.desired_pose.pose.position.z = self.kp_msg.right_wrist.z + self.normal_vector[2]*magnitud
 
                 # Calcular orientación de F respecto a 0. F es nuestra herramienta personalizada. 0 es la base del robot.
                 # Los ejes de F se alinean como:
                 #   - Eje Y de F con vect_forearm
                 #   - Eje Z de F con -normal_vector pq queremos que se aproxime hacia el brazo.
+                self.desired_pose.pose.orientation = calculate_quaternion_0_F(vect_forearm, -self.normal_vector)
 
-                self.eq_pose.pose.orientation = calculate_quaternion_0_F(vect_forearm, -self.normal_vector)
-                self.pub.publish(self.eq_pose)
+                commanded_pose = smooth_interpolation(self.current_pose, self.desired_pose, max_step=1)
+                self.pub.publish(commanded_pose)
                 
-            elif self.hri_state == 6:
-                # Agarrando
-                rospy.loginfo("Agarrando")
-
-                self.eq_pose.pose.position.x = self.kp_msg.right_wrist.x
-                self.eq_pose.pose.position.y = self.kp_msg.right_wrist.y
-                self.eq_pose.pose.position.z = self.kp_msg.right_wrist.z + 0.1
-
-                self.pub.publish(self.eq_pose)
-
-            
             elif self.hri_state == 3:
-                rospy.loginfo("Soltando...")
+                # Agarrando
+                rospy.loginfo("Agarrando..")
+
+            elif self.hri_state == 4:
                 # Soltando
                 # Monitorizar la posición del efector final, si se sale de cierto espacio, vuelve al reposo.
+                rospy.loginfo("Soltando...")
 
             else:
-                # Reposo
+                # Caso 0. Posición 0
                 rospy.loginfo("En reposo")
-                self.eq_pose.pose.position.x = 0.25
-                self.eq_pose.pose.position.y = 0.0
-                self.eq_pose.pose.position.z = 0.5
-                self.eq_pose.pose.orientation.x = 0.92
-                self.eq_pose.pose.orientation.y = -0.37
-                self.eq_pose.pose.orientation.z = 0.0
-                self.eq_pose.pose.orientation.w = 0.0
+                self.desired_pose.pose.position.x = 0.25
+                self.desired_pose.pose.position.y = 0.0
+                self.desired_pose.pose.position.z = 0.5
+                self.desired_pose.pose.orientation.x = 0.92
+                self.desired_pose.pose.orientation.y = -0.37
+                self.desired_pose.pose.orientation.z = 0.0
+                self.desired_pose.pose.orientation.w = 0.0
 
-                self.pub.publish(self.eq_pose)
+                commanded_pose = smooth_interpolation(self.current_pose, self.desired_pose, max_step=0.1)
+                self.pub.publish(commanded_pose)
         
-            rospy.loginfo("Actualizando equilibrium_pose")
+            rospy.logdebug("Actualizando equilibrium_pose")
 
         except Exception as e:
             rospy.logwarn(f"Error en eq_pose_publisher_callback: {e}")
@@ -244,15 +329,16 @@ if __name__ == '__main__':
     try:
         eq_publisher = EquilibriumPosePublisher()
 
+        # Bucle de control
+        rate = rospy.Rate(50)  # 10 Hz
+        while not rospy.is_shutdown():
+            eq_publisher.desired_pose_publisher_callback()
+            rate.sleep()
+        
+        # Salida controlada del nodo
         def shutdown_callback():
             rospy.loginfo("Shutting down equilibrium_pose_publisher node...")
         rospy.on_shutdown(shutdown_callback)
-
-        # Bucle de control
-        rate = rospy.Rate(10)  # 10 Hz
-        while not rospy.is_shutdown():
-            eq_publisher.eq_pose_publisher_callback()
-            rate.sleep()
 
     except rospy.ROSInterruptException:
         pass
