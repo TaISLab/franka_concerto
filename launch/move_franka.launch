@@ -27,9 +27,19 @@
     <node name="hri_states_publisher" pkg="franka_concerto" type="hri_states_node.py" required="true" output="screen" />
 
     <!-- Nodo para el cálculo de la cinematica inversa del brazo -->
-    <node name="equilibrium_pose_publisher" pkg="franka_concerto" type="publish_eq_pose.py" required="true" output="screen" />
+    <node name="equilibrium_pose_publisher" pkg="franka_concerto" type="publish_eq_pose.py" required="true" output="log" />
 
     <!-- Controlador de impedancia cartesiana. Por ahora no va a ir aqui dentro -->
+
+    <!--  -->
+
+
+    <!-- CONTROL DE LA PINZA SUBACT_GRIPPER -->
+    <!-- Nodo para la comunicacion entre Arduino y ROS -->
+    <node name="serial_sync" pkg="subact_gripper" type="serialSyncroV2.py" required="false" output="screen"/>
+  
+    <!-- Nodo para comandar abrir o cerrar la pinza por teclado. Remapeado para facilitar el código. -->
+    <node name="gripper_control" pkg="subact_gripper" type="gripper_control_rco.py" required="false" output="log" />
 
 
 </launch>

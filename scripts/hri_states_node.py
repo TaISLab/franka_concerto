@@ -5,7 +5,6 @@ from geometry_msgs.msg import PoseStamped, Point
 import numpy as np
 from std_msgs.msg import Int32, Bool, Float32  # Importa el tipo de mensaje Int32
 from scipy.spatial.transform import Rotation as R
-
 from franka_buttons.msg import FrankaButtons
 
 
@@ -18,12 +17,14 @@ class hriStatePublisher:
 
         # Publisher para enviar el equilibrium_pose
         self.hri_state_pub = rospy.Publisher('/hri_state', Int32, queue_size=10)
+        self.gripper_state_d_pub = rospy.Publisher('/gripper_state_desired', Int32, queue_size=10)
 
         # Subscripción a la info de los botones del Franka FR3.
         rospy.Subscriber('/franka_buttons', FrankaButtons, self.franka_buttons_callback)
 
         # Estado HRI. se inicia en -1 para detectar el primer cambio
-        self.hri_state = -1  
+        self.hri_state = -1
+        self.gripper_state_d = -1   
 
         # Estado actual de los botones
         self.check = False
@@ -36,6 +37,8 @@ class hriStatePublisher:
         self.prev_check = False
         self.prev_circle = False
         self.prev_cross = False
+        self.prev_x = 0.0
+        self.prev_y = 0.0
 
     def franka_buttons_callback(self, msg):
         """
@@ -44,25 +47,30 @@ class hriStatePublisher:
         :param msg: Mensaje de tipo FrankaButtons con el estado de los botones.
         """
         # Detectar cambios de 0 -> 1 y resetear a 0 inmediatamente
+
+        # Boton cross
         if not self.prev_cross and msg.cross:
             rospy.loginfo("Botón Cross presionado")
             self.hri_state = 0
             self.hri_state_pub.publish(self.hri_state)
 
+            self.gripper_state_d = 0
+            self.gripper_state_d_pub.publish(self.gripper_state_d)
+
             self.cross = False
         else:
             self.cross = msg.cross
         
+        # Boton check
         if not self.prev_check and msg.check:
             rospy.loginfo("Botón Check presionado")
             self.hri_state = 1
             self.hri_state_pub.publish(self.hri_state)
-
-            self.check = False
-            
+            self.check = False 
         else:
             self.check = msg.check
 
+        # Boton circle
         if not self.prev_circle and msg.circle:
             rospy.loginfo("Botón Circle presionado")
             self.hri_state = 2
@@ -71,6 +79,18 @@ class hriStatePublisher:
         else:
             self.circle = msg.circle
 
+        # Boton x. Hacia arriba y abajo en la ruleta del Franka.
+        if msg.x == 1 and self.gripper_state_d != 1:
+            rospy.loginfo("Boton x = 1. Cerrando pinza...")
+            self.gripper_state_d = 1
+            self.prev_x = 1
+            self.gripper_state_d_pub.publish(self.gripper_state_d)
+        elif msg.x == -1 and self.gripper_state_d != 0:
+            rospy.loginfo("Boton x = -1. Abriendo pinza...")
+            self.gripper_state_d = 0
+            self.prev_x = -1
+            self.gripper_state_d_pub.publish(self.gripper_state_d)
+            
         # Guardar el estado anterior de los botones
         self.prev_check = msg.check
         self.prev_circle = msg.circle
