@@ -16,15 +16,17 @@ class CartesianPathPlanner:
         # self.current_pose_publisher = rospy.Publisher("/current_pose", PoseStamped, queue_size=10)
         # self.equilibrium_pose_publisher = rospy.Publisher("/path_planner/pos_desired", PoseStamped, queue_size=10)
 
-        # Subscripción al estado del robot
-        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_current_pose_callback)
-        
+        # Subscribers
+        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_current_pose_callback)  # Subscripción al estado del robot
+        rospy.Subscriber('/pose_desired', PoseStamped, self.obtain_desired_pose_callback) # Subscripción a la pose deseada
+
         # Inicializar pose actual como vacía
         self.current_pose = PoseStamped()
         self.current_pose.header.stamp = rospy.Time(0)  # Indicar que no tiene datos aún
 
         self.initial_pose = PoseStamped()
         self.desired_pose = PoseStamped()
+        self.desired_pose.header.stamp = rospy.Time(0)  # No tiene datos aún
         
         rospy.sleep(1)
 
@@ -55,6 +57,14 @@ class CartesianPathPlanner:
         self.current_pose.header.frame_id = "fr3_link0"
         self.current_pose.pose.position.x, self.current_pose.pose.position.y, self.current_pose.pose.position.z = current_position
         self.current_pose.pose.orientation.x, self.current_pose.pose.orientation.y, self.current_pose.pose.orientation.z, self.current_pose.pose.orientation.w = current_orientation.as_quat()
+
+    def obtain_desired_pose_callback(self, msg):
+        """ Callback que obtiene la pose deseada para el robot"""
+
+        self.desired_pose.header.stamp = rospy.Time.now()
+        self.desired_pose.header.frame_id = "fr3_link0"
+        self.desired_pose.pose.position = msg.pose.position
+        self.desired_pose.pose.orientation = msg.pose.orientation
 
     
     def send_equilibrium_pose(self, initial_pose, target_pose, duration=10.0, rate_hz=100):
@@ -116,35 +126,19 @@ if __name__ == "__main__":
     rospy.loginfo("Nodo iniciado correctamente")
     planner = CartesianPathPlanner()
 
+    # Esperar a obtener la pose actual
     while planner.current_pose.header.stamp == rospy.Time(0):  
         rospy.logwarn("Esperando a recibir la pose actual del robot...")
     rospy.sleep(0.1)
     planner.initial_pose = planner.current_pose
 
-    # Posicion
+    # Esperar a obtener la pose deseada
+    while planner.desired_pose.header.stamp == rospy.Time(0):  
+        rospy.logwarn("Esperando a recibir la pose deseada del robot...")
+
+    # Asignación de pose
     target_pose = PoseStamped()
-    target_pose.pose.position.x = 0.5
-    target_pose.pose.position.y = 0.0
-    target_pose.pose.position.z = 0.5
-
-    # Orientacion. Definida como ángulos Euler XYZ. 
-    euler_angles = [3.1415, 0, 0]  # (x, y, z) en radianes. La rotx(pi) para efector final hacia abajo
-
-    # Convertir a cuaternión
-    quat = R.from_euler('xyz', euler_angles).as_quat()
-
-    q_scipy_normalizado = R.from_quat(quat).as_quat()  # scipy automáticamente normaliza
-    
-    # Convertir a quaternion de geometry_msg
-    q_ros = Quaternion()
-    q_ros.x = q_scipy_normalizado[0]
-    q_ros.y = q_scipy_normalizado[1]
-    q_ros.z = q_scipy_normalizado[2]
-    q_ros.w = q_scipy_normalizado[3]
-
-    target_pose.pose.orientation = q_ros
-    planner.desired_pose = target_pose
-
+    target_pose.pose = planner.desired_pose.pose 
 
     rospy.sleep(2)  # Esperar que todo esté listo antes de enviar
     planner.send_equilibrium_pose(planner.initial_pose, target_pose)
