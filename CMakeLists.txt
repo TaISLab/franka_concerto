@@ -51,6 +51,8 @@ include_directories(
 install(PROGRAMS
   scripts/publish_eq_pose.py
   scripts/hri_states_node.py
+  scripts/cartesian_path_planner.py
+  scripts/desired_pose_publisher.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
