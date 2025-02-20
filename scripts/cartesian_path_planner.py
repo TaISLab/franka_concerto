@@ -18,7 +18,7 @@ class CartesianPathPlanner:
 
         # Subscribers
         rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_current_pose_callback)  # Subscripción al estado del robot
-        rospy.Subscriber('/pose_desired', PoseStamped, self.obtain_desired_pose_callback) # Subscripción a la pose deseada
+        rospy.Subscriber('/desired_pose', PoseStamped, self.obtain_desired_pose_callback) # Subscripción a la pose deseada
 
         # Inicializar pose actual como vacía
         self.current_pose = PoseStamped()

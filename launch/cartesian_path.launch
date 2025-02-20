@@ -1,0 +1,20 @@
+<launch>
+
+    <!-- ***********************************************************************-->
+    <!--  ROSLAUNCH FILE    (http://wiki.ros.org/roslaunch/)                    -->
+    <!--                                                                        -->
+    <!--  COMMAND-LINE USAGE:                                                   -->
+
+    <!-- ***********************************************************************-->
+
+    <!-- Argumentos de configuración del launch -->
+
+    <!--  Publicador de pose cartesiana -->
+    <node name="desired_pose_publisher" pkg="franka_concerto" type="desired_pose_publisher.py" required="true" output="screen" />
+    
+    <!-- Planificador cartesiano -->
+    <node name="cartesian_path_planner" pkg="franka_concerto" type="cartesian_path_planner.py" required="true" output="screen" />
+
+
+
+</launch>

@@ -5,7 +5,9 @@ from geometry_msgs.msg import PoseStamped, Point
 import numpy as np
 from std_msgs.msg import Int32, Bool, Float32  # Importa el tipo de mensaje Int32
 from scipy.spatial.transform import Rotation as R
+
 from franka_buttons.msg import FrankaButtons
+from franka_msgs.msg import FrankaState
 
 
 class hriStatePublisher:
@@ -13,18 +15,23 @@ class hriStatePublisher:
         """
         Initialize the ROS node, set up subscribers.
         """
-        rospy.init_node('eq_pose_publisher', anonymous=False)
+        rospy.init_node('hri_states_controller', anonymous=False)
 
-        # Publisher para enviar el equilibrium_pose
+        # Publishers
         self.hri_state_pub = rospy.Publisher('/hri_state', Int32, queue_size=10)
         self.gripper_state_d_pub = rospy.Publisher('/gripper_state_desired', Int32, queue_size=10)
 
         # Subscripción a la info de los botones del Franka FR3.
         rospy.Subscriber('/franka_buttons', FrankaButtons, self.franka_buttons_callback)
+        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_franka_info_callback)
 
         # Estado HRI. se inicia en -1 para detectar el primer cambio
         self.hri_state = -1
-        self.gripper_state_d = -1   
+        self.gripper_state_d = -1  
+
+        # Info del Franka
+        self.franka_state = FrankaState.robot_mode() # Estado del manipulador
+        self.cartesian_contact = FrankaState.cartesian_contact() # Contactos cartesianos. Se define cuando ocurre un contacto dentro de franka_control.yaml
 
         # Estado actual de los botones
         self.check = False
@@ -39,6 +46,14 @@ class hriStatePublisher:
         self.prev_cross = False
         self.prev_x = 0.0
         self.prev_y = 0.0
+    
+    def obtain_franka_info_callback(self, msg):
+        """
+        Actualiza la información obtenida de franka_states
+        """
+        rospy.loginfo("Actualizando estado del robot")
+        self.franka_state = msg.robot_mode
+        self.cartesian_contact = msg.cartesian_contact
 
     def franka_buttons_callback(self, msg):
         """
@@ -48,14 +63,39 @@ class hriStatePublisher:
         """
         # Detectar cambios de 0 -> 1 y resetear a 0 inmediatamente
 
+        #####################################################################################################
+        # Pulsador con memoria. Cuando se pulsa una vez, se activa, si se pulsa otra vez se desactiva.
+        # Cross
+        if msg.cross == True and self.prev_cross == False:
+            self.detect_cross = not self.detect_cross
+            if self.detect_cross == True:
+                rospy.loginfo("Botón Cross activo")
+            else:
+                rospy.loginfo("Botón Cross desactivo")    
+        self.prev_cross = msg.cross
+
+        # Check
+        if msg.check == True and self.prev_check == False:
+            self.detect_check = not self.detect_check
+            
+        self.prev_check = msg.check
+
+        # Circle
+        if msg.check == True and self.prev_check == False:
+            self.detect_check = not self.detect_check
+            
+        self.prev_check = msg.check
+        #####################################################################################################
+
+
         # Boton cross
         if not self.prev_cross and msg.cross:
             rospy.loginfo("Botón Cross presionado")
-            self.hri_state = 0
-            self.hri_state_pub.publish(self.hri_state)
+            # self.hri_state = 0
+            # self.hri_state_pub.publish(self.hri_state)
 
-            self.gripper_state_d = 0
-            self.gripper_state_d_pub.publish(self.gripper_state_d)
+            # self.gripper_state_d = 0
+            # self.gripper_state_d_pub.publish(self.gripper_state_d)
 
             self.cross = False
         else:
@@ -99,6 +139,14 @@ class hriStatePublisher:
         # Actualizar joystick normalmente
         self.x = msg.x
         self.y = msg.y
+
+    def hri_states_publisher_callback(self):
+        '''
+        Máquina de estados
+        '''
+
+        if 
+        
 
 
 if __name__ == '__main__':
