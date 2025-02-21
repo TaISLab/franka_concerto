@@ -24,10 +24,10 @@
     </node>
     
     <!-- Nodo encargado de gestionar los estados del sistema -->
-    <node name="hri_states_publisher" pkg="franka_concerto" type="hri_states_node.py" required="true" output="screen" />
+    <node name="hri_states_publisher" pkg="franka_concerto" type="hri_states_publisher.py" required="true" output="screen" />
 
-    <!-- Nodo para el cálculo de la cinematica inversa del brazo -->
-    <node name="equilibrium_pose_publisher" pkg="franka_concerto" type="publish_eq_pose.py" required="true" output="log" />
+    <!-- Nodo -->
+    <!-- <node name="equilibrium_pose_publisher" pkg="franka_concerto" type="publish_eq_pose.py" required="true" output="log" /> -->
 
     <!-- Controlador de impedancia cartesiana. Por ahora no va a ir aqui dentro -->
 
