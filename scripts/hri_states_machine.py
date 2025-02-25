@@ -64,47 +64,75 @@ class VisionMonitor:
       'kp_valid': self.kp_valid
     }
 
+class ButtonMonitor:
+  """ Clase singleton para almacenar y compartir los botones globalmente """
+  _instance = None
+
+  def __new__(cls):
+    if cls._instance is None:
+        cls._instance = super(ButtonMonitor, cls).__new__(cls)
+        cls._instance.init_ros()
+    return cls._instance
+
+  def init_ros(self):
+    """ Inicializa la subscripción al tópico de los botones """
+    self.check = False
+    self.circle = False
+    self.cross = False
+    self.x = 0.0
+    self.y = 0.0
+
+    self.sub = rospy.Subscriber("/franka_buttons", FrankaButtons, self.button_callback)
+
+  def button_callback(self, msg):
+    """ Callback que recibe los datos de los botones y los almacena globalmente """
+    self.check = msg.check
+    self.circle = msg.circle
+    self.cross = msg.cross
+    self.x = msg.x
+    self.y = msg.y
+
+  def get_latest_data(self):
+    """ Devuelve los últimos valores actualizados de los botones """
+    return {
+        'check': self.check,
+        'circle': self.circle,
+        'cross': self.cross,
+        'x': self.x,
+        'y': self.y
+    }
+
   
 # Definir estado REPOSO
 class Reposo(State):
-  def __init__(self):
+  def __init__(self, buttons):
     State.__init__(self, outcomes=['buscar','esperando'])
 
-    rospy.Subscriber("/franka_buttons", FrankaButtons, self.check_button_callback)
-    
-    self.check_button_pressed = False
-
-  def check_button_callback(self, msg):
-    """ Función que verifica si se ha pulsado el botón check """
-    if msg.check: # Si se ha pulsado, true
-      rospy.loginfo("Rep: Botón Check pulsado")
-      self.check_button_pressed = True
+    self.buttons = buttons  # Guardamos la instancia
 
   def execute(self, userdata):
     
     rospy.loginfo('Ejecutando estado de REPOSO...')
+    buttons_data = self.buttons.get_latest_data()
 
-    if self.check_button_pressed:
-      self.check_button_pressed = False
-      return 'buscar'  # O algún estado seguro
+    if buttons_data['check']:
+
+      return 'buscar'
     
     rospy.sleep(0.1)
 
-
-    if rospy.is_shutdown():
-       rospy.logwarn("Ctrl+C detectado. Terminando FSM.")
-       return 'shutdown'
-    
     return 'esperando'  # O algún estado seguro
 
 
     
 # Estado BUSCANDO. El sistema busca que la muñeca esté dentro del espacio de trabajo
 class Buscando(State):
-  def __init__(self, vision):
-    State.__init__(self, outcomes=['encontrado','no_encontrado'])
+  def __init__(self, vision, buttons):
+    State.__init__(self, outcomes=['encontrado','no_encontrado', 'abortar'])
+    
     self.vision = vision  # Guardamos la instancia
-
+    self.buttons = buttons  # Guardamos la instancia
+    
     self.tiempo_inicio = None  # Guarda el tiempo en que el keypoint entra en la zona
 
   def esta_dentro_del_espacio(self, punto):
@@ -123,7 +151,6 @@ class Buscando(State):
     # IMPORTANTE!! Modificar para que estudie que la muñeca permanece quieta en el espacio
     ###############################
 
-    # while not rospy.is_shutdown():
     #   if self.esta_dentro_del_espacio(userdata.kp_R_Wrist):
     #     if self.tiempo_inicio is None:  
     #         self.tiempo_inicio = time.time()  # inicio del contador
@@ -140,15 +167,21 @@ class Buscando(State):
 
     
     vision_data = self.vision.get_latest_data()
+    buttons_data = self.buttons.get_latest_data()
 
     if (vision_data['kp_valid']) and (self.esta_dentro_del_espacio(vision_data['kp_R_Wrist'])):
        return 'encontrado'
+    elif buttons_data['cross']:
+      return 'abortar'
     
     return 'no_encontrado'
 
 class Aproximando(State):
-  def __init__(self):
+  def __init__(self, vision, buttons):
     State.__init__(self, outcomes=['aproximado','error'])
+
+    self.vision = vision  # Guardamos la instancia
+    self.buttons = buttons  # Guardamos la instancia
 
     # subscripción al current_pose
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback)
@@ -199,20 +232,22 @@ def main():
 
   # Inicializar el VisionMonitor (Singleton)
   vision = VisionMonitor()
+  buttons = ButtonMonitor()
 
   # Crear la FSM principal
   sm_fsm = StateMachine(outcomes=['succeeded', 'failed'])
 
   with sm_fsm:
-    StateMachine.add('REPOSO', Reposo(),
+    StateMachine.add('REPOSO', Reposo(buttons),
                       transitions={'buscar': 'BUSCANDO',
                                   'esperando': 'REPOSO'})
 
-    StateMachine.add('BUSCANDO', Buscando(vision),
+    StateMachine.add('BUSCANDO', Buscando(vision, buttons),
                       transitions={'encontrado': 'APROXIMANDO',
-                                  'no_encontrado': 'BUSCANDO'})
+                                   'no_encontrado': 'BUSCANDO',
+                                   'abortar': 'REPOSO'})
 
-    StateMachine.add('APROXIMANDO', Aproximando(),
+    StateMachine.add('APROXIMANDO', Aproximando(vision, buttons),
                       transitions={'aproximado': 'succeeded',
                                   'error': 'failed'})
 
