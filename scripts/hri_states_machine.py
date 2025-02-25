@@ -14,86 +14,61 @@ from skeleton_3d.msg import Skeleton3D  # Mensaje con info de los KP
 from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F
 
 
-# Estado Monitor State
-def button_cross_pressed(msg):
-    if msg.cross:  # El botón cross se ha presionado
-        rospy.logwarn("Botón CROSS detectado. Volviendo a REPOSO.")
-        return False  # Interrumpe la ejecución del estado actual
-    return True  # Continúa la ejecución normal  
 
+class VisionMonitor:
+  """ Clase singleton para almacenar y compartir los KP globalmente """
+  _instance = None
 
+  def __new__(cls):
+    if cls._instance is None:
+      cls._instance = super(VisionMonitor, cls).__new__(cls)
+      cls._instance.init_ros()
+    return cls._instance
 
+  def init_ros(self):
+    self.kp_R_Wrist = None
+    self.kp_R_Elbow = None
+    self.kp_R_Shoulder = None
+    self.normal_vector = None
+    self.vect_forearm = None
+    self.kp_valid = False
 
-class VisionMonitorState(State):
-  """
-  Este estado se encargada de leer los KP del sistema de visión y calcular los vectores de .
-  """
-  def __init__(self):
-      State.__init__(self, 
-                            outcomes=['keypoints_valid'],
-                            output_keys=['kp_R_Wrist', 'kp_R_Elbow', 'kp_R_Shoulder', 'normal_vector', 'vect_forearm'])
-      
-      # Suscripción al sistema de visión
-      self.sub = rospy.Subscriber('/skeleton_3D', Skeleton3D, self.obtain_skeleton3D_callback)
-
-      # Variables para almacenar los KP
-      self.kp_R_Wrist = np.array([0,0,0])
-      self.kp_R_Elbow = np.array([0,0,0])
-      self.kp_R_Shoulder = np.array([0,0,0])
-      self.normal_vector = np.array([0,0,1])
-      self.vect_forearm = np.array([0,0,0])
-
-      self.kp_valid = False
-      self.lost_time = None  # Tiempo en que se perdieron los KP
+    self.sub = rospy.Subscriber('/skeleton_3D', Skeleton3D, self.obtain_skeleton3D_callback)
 
   def obtain_skeleton3D_callback(self, msg):
-      """ Obtiene keypoints y calcula el vector normal. """
-      # Extraigo los KP como arrays de 3 valores (x y z)
-      keypointsX = np.array([(kp.x, kp.y, kp.z) for kp in msg.keypoints])
+    """ Callback que recibe los datos de visión y los almacena globalmente """
+    keypointsX = np.array([(kp.x, kp.y, kp.z) for kp in msg.keypoints])
 
-      self.kp_R_Shoulder = keypointsX[6]
-      self.kp_R_Elbow = keypointsX[8]
-      self.kp_R_Wrist = keypointsX[10]
+    self.kp_R_Shoulder = keypointsX[6]
+    self.kp_R_Elbow = keypointsX[8]
+    self.kp_R_Wrist = keypointsX[10]
 
-      if are_kp_valid(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist):
-          # Calculo de vectores
-          self.normal_vector = calculate_normal_vector(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist)
-          self.vect_forearm = self.kp_R_Wrist - self.kp_R_Elbow
+    if are_kp_valid(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist):
+      self.normal_vector = calculate_normal_vector(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist)
+      self.vect_forearm = self.kp_R_Wrist - self.kp_R_Elbow
+      self.kp_valid = True
+    else:
+      self.kp_valid = False
 
-          self.kp_valid = True
-          self.lost_time = None  # Reiniciar el contador de pérdida de KP
-      else:
-          rospy.logdebug("KP no válidos detectados. No se actualiza el valor.")
-          self.kp_valid = False
-          if self.lost_time is None:
-              self.lost_time = rospy.Time.now()
-
-  def execute(self, userdata):
-    rospy.loginfo("Monitoreando keypoints en paralelo...")
-
-    while not rospy.is_shutdown():
-      if self.kp_valid:
-        # Guardar KP en `userdata`
-        userdata.kp_R_Wrist = self.kp_R_Wrist
-        userdata.kp_R_Elbow = self.kp_R_Elbow
-        userdata.kp_R_Shoulder = self.kp_R_Shoulder
-        userdata.normal_vector = self.normal_vector
-        userdata.vect_forearm = self.vect_forearm
-        # return 'keypoints_valid'  # Continúa con el flujo normal
-      
-      elif self.lost_time and (rospy.Time.now() - self.lost_time).to_sec() > 3.0:
-        rospy.logwarn("Los KP se han perdido por más de 3 segundos. Reiniciando búsqueda...")
-        self.lost_time = rospy.Time.now()  # Reiniciar el contador en vez de salir
-        # continue  # Mantener el estado activo y seguir buscando
-
-      rospy.sleep(0.1)  # Ciclo de espera
+  def get_latest_data(self):
+    """
+    Devuelve los últimos valores actualizados. Devuelve un diccionario.
+    Se accede con: vision_data['kp_R_Wrist']
+    """
+    return {
+      'kp_R_Wrist': self.kp_R_Wrist,
+      'kp_R_Elbow': self.kp_R_Elbow,
+      'kp_R_Shoulder': self.kp_R_Shoulder,
+      'normal_vector': self.normal_vector,
+      'vect_forearm': self.vect_forearm,
+      'kp_valid': self.kp_valid
+    }
 
   
-
 # Definir estado REPOSO
 class Reposo(State):
   def __init__(self):
-    State.__init__(self, outcomes=['buscar','esperando', 'shutdown'])
+    State.__init__(self, outcomes=['buscar','esperando'])
 
     rospy.Subscriber("/franka_buttons", FrankaButtons, self.check_button_callback)
     
@@ -106,23 +81,30 @@ class Reposo(State):
       self.check_button_pressed = True
 
   def execute(self, userdata):
+    
     rospy.loginfo('Ejecutando estado de REPOSO...')
+
+    if self.check_button_pressed:
+      self.check_button_pressed = False
+      return 'buscar'  # O algún estado seguro
     
-    while not rospy.is_shutdown():
-        if self.check_button_pressed:
-            self.check_button_pressed = False
-            return 'buscar'
-        rospy.sleep(0.1)  
+    rospy.sleep(0.1)
+
+
+    if rospy.is_shutdown():
+       rospy.logwarn("Ctrl+C detectado. Terminando FSM.")
+       return 'shutdown'
     
-    rospy.logwarn("Ctrl+C detectado. Terminando FSM.")
-    return 'shutdown'  # Salir correctamente
+    return 'esperando'  # O algún estado seguro
+
+
     
 # Estado BUSCANDO. El sistema busca que la muñeca esté dentro del espacio de trabajo
 class Buscando(State):
-  def __init__(self):
-    State.__init__(self, outcomes=['encontrado','no_encontrado', 'shutdown'], input_keys=['kp_R_Wrist'])
- 
-    self.keypoint_detectado = None  # Almacena la posición del keypoint
+  def __init__(self, vision):
+    State.__init__(self, outcomes=['encontrado','no_encontrado'])
+    self.vision = vision  # Guardamos la instancia
+
     self.tiempo_inicio = None  # Guarda el tiempo en que el keypoint entra en la zona
 
   def esta_dentro_del_espacio(self, punto):
@@ -131,9 +113,9 @@ class Buscando(State):
     y_min, y_max = -0.3, 0.3
     z_min, z_max = 0.0, 0.8
 
-    return (x_min <= punto.x <= x_max and 
-            y_min <= punto.y <= y_max and 
-            z_min <= punto.z <= z_max)
+    return (x_min <= punto[0] <= x_max and 
+            y_min <= punto[1] <= y_max and 
+            z_min <= punto[2] <= z_max)
 
   def execute(self, userdata):
     rospy.loginfo("Ejecutando estado BUSCANDO...")
@@ -154,16 +136,19 @@ class Buscando(State):
 
     #   rospy.sleep(0.1)  # pausa
       # return 'no_encontrado'
-    rospy.sleep(2)  # pausa
-    if self.esta_dentro_del_espacio(userdata.kp_R_Wrist):
+    rospy.sleep(1)  # pausa
+
+    
+    vision_data = self.vision.get_latest_data()
+
+    if (vision_data['kp_valid']) and (self.esta_dentro_del_espacio(vision_data['kp_R_Wrist'])):
        return 'encontrado'
     
-    rospy.logwarn("Ctrl+C detectado. Terminando FSM.")
-    return 'shutdown'  # Salir correctamente
+    return 'no_encontrado'
 
 class Aproximando(State):
   def __init__(self):
-    State.__init__(self, outcomes=['aproximado','error', 'shutdown'], input_keys=['kp_R_Wrist', 'normal_vector', 'vect_forearm'])
+    State.__init__(self, outcomes=['aproximado','error'])
 
     # subscripción al current_pose
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback)
@@ -189,9 +174,11 @@ class Aproximando(State):
       rospy.loginfo("Ejecutando estado Aproximando")
       distancia_aproximacion = 0.1
 
+      vision_data = self.vision.get_latest_data()
+
       desired_pose = PoseStamped()
-      desired_pose.pose.position = calculate_gripper_position(userdata.kp_R_Wrist, userdata.normal_vector, distancia_aproximacion)
-      desired_pose.pose.orientation = calculate_quaternion_0_F(userdata.vect_forearm, -userdata.normal_vector)
+      desired_pose.pose.position = calculate_gripper_position(vision_data['kp_R_Wrist'], vision_data['normal_vector'], distancia_aproximacion)
+      desired_pose.pose.orientation = calculate_quaternion_0_F(vision_data['vect_forearm'], -vision_data['normal_vector'])
       self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
       while (self.path_planning_state != 1):
@@ -206,85 +193,38 @@ class Aproximando(State):
 
 
 def main():
-  # Initialize the node
+  # Inicializar nodo ROS
   rospy.init_node('fsm_fusion_franka_vision')
   rospy.loginfo("DEBUG: Iniciando nodo")
 
-  # Crear una concurrencia donde `VISION_MONITOR` y `MONITOR_CROSS` corren siempre
-  sm_concurrente = Concurrence(
-      outcomes=['shutdown'],
-      default_outcome='shutdown',
-      output_keys=['kp_R_Wrist', 'kp_R_Elbow', 'kp_R_Shoulder', 'normal_vector', 'vect_forearm'],
-      child_termination_cb=lambda so: False,  # No termina si uno de los estados finaliza
-      outcome_map={
-          'shutdown': {
-              'VISION_MONITOR': 'keypoints_valid',
-              'MONITOR_CROSS': 'invalid',
-              'FSM_PRINCIPAL': 'shutdown'  # Ahora FSM_PRINCIPAL sabe cómo salir
-          }
-      }
-  )
+  # Inicializar el VisionMonitor (Singleton)
+  vision = VisionMonitor()
 
+  # Crear la FSM principal
+  sm_fsm = StateMachine(outcomes=['succeeded', 'failed'])
 
-  with sm_concurrente:
-    # Estado concurrente 1: Monitor de visión (siempre corriendo)
-    Concurrence.add('VISION_MONITOR', VisionMonitorState())
-    
-    # Estado concurrente 2: Monitor del botón CROSS (siempre corriendo)
-    Concurrence.add('MONITOR_CROSS',
-        smach_ros.MonitorState('/franka_buttons', FrankaButtons, button_cross_pressed,
-                              input_keys=['cross'])  # Agregar input_keys
-    )
+  with sm_fsm:
+    StateMachine.add('REPOSO', Reposo(),
+                      transitions={'buscar': 'BUSCANDO',
+                                  'esperando': 'REPOSO'})
 
-    
-    
-    # Crear la FSM principal dentro de la concurrencia (correrá en paralelo con los monitores)
-    sm_fsm = StateMachine(outcomes=['succeeded', 'failed', 'shutdown'])  # Agregamos shutdown
-
-    
-    # Set user data for the finite state machine
-    sm_fsm.userdata.kp_R_Wrist = Point(0, 0, 0)
-    sm_fsm.userdata.kp_R_Elbow = Point(0, 0, 0)
-    sm_fsm.userdata.kp_R_Shoulder = Point(0, 0, 0)
-    sm_fsm.userdata.normal_vector = np.array([0, 0, 1])
-    sm_fsm.userdata.vect_forearm = np.array([0, 0, 0])
-
-    with sm_fsm:
-      StateMachine.add('REPOSO', Reposo(),
-                       transitions={'buscar': 'BUSCANDO',
-                                'esperando': 'REPOSO',
-                                'shutdown': 'shutdown'},
-                       remapping={'kp_R_Wrist': 'kp_R_Wrist'})
-      StateMachine.add('BUSCANDO', Buscando(),
+    StateMachine.add('BUSCANDO', Buscando(vision),
                       transitions={'encontrado': 'APROXIMANDO',
-                                    'no_encontrado': 'BUSCANDO',
-                                    'shutdown': 'shutdown'},
-                       remapping={'kp_R_Wrist': 'kp_R_Wrist'})
+                                  'no_encontrado': 'BUSCANDO'})
 
-      StateMachine.add('APROXIMANDO', Aproximando(),
+    StateMachine.add('APROXIMANDO', Aproximando(),
                       transitions={'aproximado': 'succeeded',
-                                    'error': 'failed',
-                                    'shutdown': 'shutdown'},
-                       remapping={'kp_R_Wrist': 'kp_R_Wrist',
-                                  'normal_vector': 'normal_vector',
-                                  'vect_forearm': 'vect_forearm'})
+                                  'error': 'failed'})
 
-    # Agregar la FSM a la concurrencia
-    Concurrence.add('FSM_PRINCIPAL', sm_fsm)
-  
-  # Instrospection server: necessary to view our state transitions using ROS
-  sis = smach_ros.IntrospectionServer('server_name', sm_concurrente, '/SM_ROOT')
+  # Servidor de introspección para visualizar en SMACH Viewer
+  sis = smach_ros.IntrospectionServer('server_name', sm_fsm, '/SM_ROOT')
   sis.start()
-  
-  try:
-    outcome = sm_concurrente.execute()
-  except KeyboardInterrupt:
-      rospy.logwarn("Ctrl+C detectado. Terminando ejecución...")
-      sm_concurrente.request_preempt()  # Pedir que la concurrencia termine
-      rospy.signal_shutdown("Nodo finalizado por usuario")  # Apagar ROS correctamente
-  finally:
-      sis.stop()  # Detener introspección de SMACH
 
+  # Ejecutar la máquina de estados
+  outcome = sm_fsm.execute()
+
+  # Detener introspección cuando termine
+  sis.stop()
 
 if __name__ == '__main__':
     main()
