@@ -150,30 +150,25 @@ class Buscando(State):
     ################################
     # IMPORTANTE!! Modificar para que estudie que la muñeca permanece quieta en el espacio
     ###############################
-
-    #   if self.esta_dentro_del_espacio(userdata.kp_R_Wrist):
-    #     if self.tiempo_inicio is None:  
-    #         self.tiempo_inicio = time.time()  # inicio del contador
-          
-    #     if time.time() - self.tiempo_inicio >= 2.0:
-    #         rospy.loginfo("KP ha permanecido 3 segundos en el espacio de busqueda.")
-    #         return 'encontrado'  # al siguiente estado
-    #     else:
-    #       self.tiempo_inicio = None  # Se reinicia el contador si el kp sale del espacio
-
-    #   rospy.sleep(0.1)  # pausa
-      # return 'no_encontrado'
-    rospy.sleep(1)  # pausa
-
     
     vision_data = self.vision.get_latest_data()
     buttons_data = self.buttons.get_latest_data()
 
     if (vision_data['kp_valid']) and (self.esta_dentro_del_espacio(vision_data['kp_R_Wrist'])):
-       return 'encontrado'
-    elif buttons_data['cross']:
+      rospy.logwarn("## Dentro del espacio de busqueda ##")
+
+      if self.tiempo_inicio is None:
+        self.tiempo_inicio = time.time()  # inicio del contador
+
+      if time.time() - self.tiempo_inicio >= 2.0:
+        rospy.loginfo("KP ha permanecido 2 segundos en el espacio de busqueda.")
+        return 'encontrado'  # al siguiente estado  
+
+    if buttons_data['cross']:
       return 'abortar'
-    
+
+    rospy.loginfo("## No encontrado en el espacio de busqueda ##")
+    rospy.sleep(1)  # pausa
     return 'no_encontrado'
 
 class Aproximando(State):
