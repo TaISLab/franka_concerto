@@ -53,6 +53,7 @@ install(PROGRAMS
   scripts/hri_states_publisher.py
   scripts/cartesian_path_planner.py
   scripts/desired_pose_publisher.py
+  scripts/hri_states_machine.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
