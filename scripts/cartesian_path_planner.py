@@ -6,6 +6,26 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Int32
 import copy
 from scipy.spatial.transform import Rotation as R, Slerp
+import scipy.interpolate
+
+import scipy.interpolate
+import time
+
+# Publicar Eq pose a mano. Pon en terminal esto:
+# rostopic pub /desired_pose geometry_msgs/PoseStamped "header:
+#   stamp: now
+#   frame_id: 'fr3_link0'
+# pose:
+#   position:
+#     x: 0.5
+#     y: 0.0
+#     z: 0.3
+#   orientation:
+#     x: 1.0
+#     y: 0.0
+#     z: 0.0
+#     w: 0.0"
+
 
 class CartesianPathPlanner:
     def __init__(self):
@@ -61,95 +81,83 @@ class CartesianPathPlanner:
         # self.desired_pose = msg
 
         self.desired_pose = copy.deepcopy(msg)  # Copia segura del mensaje
-
     
-    def send_equilibrium_pose(self, initial_pose, target_pose, duration=1.0, rate_hz=100, threshold=0.005):
+
+
+
+    def send_equilibrium_pose(self, initial_pose, target_pose, duration=5.0, rate_hz=30, threshold=0.01, max_iterations=3):
         """ 
-        Envía la pose deseada con interpolación lineal en posición y SLERP en orientación.
-        Se detiene si la diferencia entre la pose actual y la deseada está por debajo del threshold.
+        Control en lazo cerrado con realimentación de la pose actual.
+        Se recalcula la interpolación si hay un error significativo.
+        Ahora con interpolación de Splines Cúbicos.
         """
+        rospy.logdebug("Path_planner: Iniciando planificación de trayectoria con Splines Cúbicos")
         
-        rospy.logdebug("Path_planner: Iniciando planificación de trayectoria")
-        
-        # Validación de poses
         if initial_pose.header.stamp == rospy.Time(0):
             rospy.logwarn("Path_planner: Pose inicial inválida. Abortando planificación.")
             return
-
-        # Configurar interpolación
-        steps = int(duration * rate_hz)
-        rate_hz = min(max(steps / duration, 10), 200)  # Limita entre 10 y 200 Hz
+        
         rate = rospy.Rate(rate_hz)
-
-        # Obtener posiciones inicial y final
-        init_pos = np.array([initial_pose.pose.position.x, initial_pose.pose.position.y, initial_pose.pose.position.z])
-        goal_pos = np.array([target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z])
+        iteration = 0
         
-        # Interpolación de posiciones
-        trajectory_pos = np.linspace(init_pos, goal_pos, steps)
+        while iteration < max_iterations:
+            initial_pose = copy.deepcopy(self.current_pose)
+            init_pos = np.array([initial_pose.pose.position.x, initial_pose.pose.position.y, initial_pose.pose.position.z])
+            goal_pos = np.array([target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z])
 
-        # Obtener cuaterniones de orientación inicial y final
-        init_quat = R.from_quat([initial_pose.pose.orientation.x, 
-                                initial_pose.pose.orientation.y, 
-                                initial_pose.pose.orientation.z, 
-                                initial_pose.pose.orientation.w])
-        
-        goal_quat = R.from_quat([target_pose.pose.orientation.x, 
-                                target_pose.pose.orientation.y, 
-                                target_pose.pose.orientation.z, 
-                                target_pose.pose.orientation.w])
-        
-        rospy.loginfo(f"Generados {len(trajectory_pos)} puntos en la trayectoria.")
-
-        # Interpolación de orientaciones
-
-        # Definir los tiempos de interpolación
-        times = [0, 1] # Esto es arbitrario. Se usa para normalizar con steps. Al final, el tiempo de 0.5 es equivalente al 0.5*steps
-
-        # Se crea el objeto Slerp. Esto no aplica la inteporlación esferia, sino q asocia tiempo y cuaternion. Posteriormente se interpola en el tiempo.
-        slerp = Slerp(times, R.from_quat([init_quat.as_quat(), goal_quat.as_quat()]))
-        trajectory_quat = slerp(np.linspace(0, 1, steps)) # Se espacia para el número de pasos
-        
-        if len(trajectory_pos) == 0:
-            rospy.logerr("ERROR: No se generaron puntos en la trayectoria. Verifica los valores de start y end.")
-            return
-
-        # Publicar poses
-        for i in range(steps):
-            pose_msg = PoseStamped()
-            pose_msg.header.stamp = rospy.Time.now()
-            pose_msg.header.frame_id = "fr3_link0"
+            # Interpolación con Splines Cúbicos
+            time_steps = np.linspace(0, 1, int(duration * rate_hz))
+            cubic_spline = scipy.interpolate.CubicSpline([0, 1], np.vstack([init_pos, goal_pos]), axis=0)
+            trajectory_pos = cubic_spline(time_steps)
             
-            # Asignar posición interpolada
-            pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = trajectory_pos[i]
-
-            # Asignar orientación interpolada con SLERP
-            quat = trajectory_quat[i].as_quat()
-            pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w = quat
+            # Obtener cuaterniones inicial y final
+            init_quat = R.from_quat([
+                initial_pose.pose.orientation.x, 
+                initial_pose.pose.orientation.y, 
+                initial_pose.pose.orientation.z, 
+                initial_pose.pose.orientation.w])
+            goal_quat = R.from_quat([
+                target_pose.pose.orientation.x, 
+                target_pose.pose.orientation.y, 
+                target_pose.pose.orientation.z, 
+                target_pose.pose.orientation.w])
             
-            rospy.logdebug(f"Publicando equilibrium_pose: x={pose_msg.pose.position.x:.4f}, y={pose_msg.pose.position.y:.4f}, z={pose_msg.pose.position.z:.4f}")
-
-            self.path_planner_state = 1
-            self.equilibrium_pose_publisher.publish(pose_msg)
-            self.path_planner_state_publisher.publish(self.path_planner_state)
-
-            # Verificación de finalización antes de completar la trayectoria
-            current_pos = np.array([self.current_pose.pose.position.x, 
-                                    self.current_pose.pose.position.y, 
-                                    self.current_pose.pose.position.z])
+            # SLERP para interpolación de cuaterniones con más puntos
+            slerp = Slerp([0, 1], R.from_quat([init_quat.as_quat(), goal_quat.as_quat()]))
+            trajectory_quat = slerp(time_steps)
             
-            # Distancia entre posición actual y deseada
-            distance_error = np.linalg.norm(goal_pos - current_pos)
-
-            if distance_error < threshold:
-                rospy.loginfo(f"Trayectoria completada antes de tiempo. Error final: {distance_error:.6f}")
-                break  # Terminar antes si se ha alcanzado la pose deseada
-
-            rate.sleep()
+            for i in range(len(trajectory_pos)):
+                pose_msg = PoseStamped()
+                pose_msg.header.stamp = rospy.Time.now()
+                pose_msg.header.frame_id = "fr3_link0"
+                
+                # Asignar posición interpolada
+                pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = trajectory_pos[i]
+                
+                # Asignar orientación interpolada con SLERP
+                quat = trajectory_quat[i].as_quat()
+                pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w = quat
+                
+                self.equilibrium_pose_publisher.publish(pose_msg)
+                self.path_planner_state_publisher.publish(1)
+                
+                current_pos = np.array([self.current_pose.pose.position.x, 
+                                        self.current_pose.pose.position.y, 
+                                        self.current_pose.pose.position.z])
+                distance_error = np.linalg.norm(goal_pos - current_pos)
+                
+                if distance_error < threshold:
+                    rospy.loginfo(f"Trayectoria completada con error final: {distance_error:.6f}")
+                    return
+                
+                rate.sleep()
+            
+            rospy.logwarn(f"Iteración {iteration+1}: Error aún presente ({distance_error:.6f}). Recalculando trayectoria...")
+            iteration += 1
         
-        # Movimiento completado
-        self.path_planner_state = 2
-        self.path_planner_state_publisher.publish(self.path_planner_state)
+        rospy.logerr("No se pudo alcanzar la pose deseada tras múltiples iteraciones.")
+
+
 
 
 if __name__ == "__main__":
