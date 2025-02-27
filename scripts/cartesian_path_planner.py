@@ -3,37 +3,40 @@
 import rospy
 import numpy as np
 from geometry_msgs.msg import PoseStamped
-from scipy.spatial.transform import Rotation as R
-from franka_msgs.msg import FrankaState
-from geometry_msgs.msg import Quaternion
+from std_msgs.msg import Int32
+import copy
+from scipy.spatial.transform import Rotation as R, Slerp
 
 class CartesianPathPlanner:
     def __init__(self):
-        rospy.init_node("cartesian_path_planner")
+        rospy.init_node("cartesian_path_planner", log_level=rospy.DEBUG)
 
-        # Publicador
+        # Publicadores
         self.equilibrium_pose_publisher = rospy.Publisher("/cartesian_impedance_example_controller/equilibrium_pose", PoseStamped, queue_size=10)
-        # self.current_pose_publisher = rospy.Publisher("/current_pose", PoseStamped, queue_size=10)
-        # self.equilibrium_pose_publisher = rospy.Publisher("/path_planner/pos_desired", PoseStamped, queue_size=10)
+        self.path_planner_state_publisher = rospy.Publisher("/path_planner_state", Int32, queue_size=2)
 
-        # Subscribers
-        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.obtain_current_pose_callback)  # Subscripción al estado del robot
-        rospy.Subscriber('/desired_pose', PoseStamped, self.obtain_desired_pose_callback) # Subscripción a la pose deseada
-
-        # Inicializar pose actual como vacía
+        # Subscriptores
+        rospy.Subscriber('/desired_pose', PoseStamped, self.obtain_desired_pose_callback, queue_size=1) # Subscripción a la pose deseada
+        rospy.Subscriber('/current_pose', PoseStamped, self.obtain_current_pose_callback, queue_size=10) # Subscripción a la pose actual
+        
+        # Inicialización de variables
         self.current_pose = PoseStamped()
         self.current_pose.header.stamp = rospy.Time(0)  # Indicar que no tiene datos aún
-
-        self.initial_pose = PoseStamped()
-        self.desired_pose = PoseStamped()
-        self.desired_pose.header.stamp = rospy.Time(0)  # No tiene datos aún
         
-        rospy.sleep(1)
+        self.desired_pose = PoseStamped()
+        self.desired_pose.header.stamp = rospy.Time(0)
+        
+        self.last_desired_pose = PoseStamped()  # Usar PoseStamped vacío
+        self.last_desired_pose.header.stamp = rospy.Time(0)  # Indicar que aún no tiene valor
+
+        self.path_planner_state_publisher.publish(0) # Estado inicial
+        
+        rospy.sleep(1) # Pausa para inicializar
 
 
-    def print_current_pose(self, pose_stamped, description="Current Pose"):
+    def print_pose(self, pose_stamped, description="Pose"):
         """
-        Imprime la información de la pose actual en la terminal.
+        Imprime la información de la pose en la terminal.
         """
         rospy.loginfo(f"{description}: x={pose_stamped.pose.position.x:.4f}, "
                       f"y={pose_stamped.pose.position.y:.4f}, "
@@ -45,102 +48,148 @@ class CartesianPathPlanner:
         return traj
 
     def obtain_current_pose_callback(self, msg):
-        """ Callback que obtiene la pose actual del robot desde FrankaState """
-        current_0_T_EE = np.array(msg.O_T_EE).reshape(4, 4).T  # Trasponer la matriz
-
-        # Extraer posición y orientación
-        current_position = current_0_T_EE[:3, 3]
-        current_orientation = R.from_matrix(current_0_T_EE[:3, :3])  # Quaternion
-
-        # Asignar la pose
-        self.current_pose.header.stamp = rospy.Time.now()
-        self.current_pose.header.frame_id = "fr3_link0"
-        self.current_pose.pose.position.x, self.current_pose.pose.position.y, self.current_pose.pose.position.z = current_position
-        self.current_pose.pose.orientation.x, self.current_pose.pose.orientation.y, self.current_pose.pose.orientation.z, self.current_pose.pose.orientation.w = current_orientation.as_quat()
+        """ Callback que obtiene la pose actual del robot desde el nuevo controlador """
+        self.current_pose = msg
 
     def obtain_desired_pose_callback(self, msg):
         """ Callback que obtiene la pose deseada para el robot"""
+        # self.desired_pose = PoseStamped()
+        # self.desired_pose.header.stamp = rospy.Time.now()
+        # self.desired_pose.header.frame_id = "fr3_link0"
+        # self.desired_pose.pose = msg
+        
+        # self.desired_pose = msg
 
-        self.desired_pose.header.stamp = rospy.Time.now()
-        self.desired_pose.header.frame_id = "fr3_link0"
-        self.desired_pose.pose.position = msg.pose.position
-        self.desired_pose.pose.orientation = msg.pose.orientation
+        self.desired_pose = copy.deepcopy(msg)  # Copia segura del mensaje
 
     
-    def send_equilibrium_pose(self, initial_pose, target_pose, duration=10.0, rate_hz=100):
-        """ Envía la pose deseada con interpolación suave """
-        # rospy.loginfo("Iniciando el envío de equilibrium_pose...")
+    def send_equilibrium_pose(self, initial_pose, target_pose, duration=1.0, rate_hz=100, threshold=0.005):
+        """ 
+        Envía la pose deseada con interpolación lineal en posición y SLERP en orientación.
+        Se detiene si la diferencia entre la pose actual y la deseada está por debajo del threshold.
+        """
         
-        # Esperar a recibir una pose válida
-        while initial_pose.header.stamp == rospy.Time(0):  
-            rospy.logwarn("Esperando a recibir la pose actual del robot...")
-            rospy.sleep(0.1)
-
-        rospy.loginfo("Recibida pose inicial, comenzando interpolación")
+        rospy.logdebug("Path_planner: Iniciando planificación de trayectoria")
         
-        # Configurar rate correctamente
-        rate = rospy.Rate(rate_hz)  # `rate_hz` es un número, mientras que `rate` es un objeto Rate
-        steps = int(duration * rate_hz)  # ← Ahora funciona bien
+        # Validación de poses
+        if initial_pose.header.stamp == rospy.Time(0):
+            rospy.logwarn("Path_planner: Pose inicial inválida. Abortando planificación.")
+            return
 
+        # Configurar interpolación
+        steps = int(duration * rate_hz)
+        rate_hz = min(max(steps / duration, 10), 200)  # Limita entre 10 y 200 Hz
+        rate = rospy.Rate(rate_hz)
 
         # Obtener posiciones inicial y final
-        init_pose = np.array([initial_pose.pose.position.x, 
-                              initial_pose.pose.position.y, 
-                              initial_pose.pose.position.z])
-        goal_pose = np.array([target_pose.pose.position.x, 
-                              target_pose.pose.position.y, 
-                              target_pose.pose.position.z])
+        init_pos = np.array([initial_pose.pose.position.x, initial_pose.pose.position.y, initial_pose.pose.position.z])
+        goal_pos = np.array([target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z])
         
+        # Interpolación de posiciones
+        trajectory_pos = np.linspace(init_pos, goal_pos, steps)
 
-        # rospy.loginfo("Inicio de interpolación")
+        # Obtener cuaterniones de orientación inicial y final
+        init_quat = R.from_quat([initial_pose.pose.orientation.x, 
+                                initial_pose.pose.orientation.y, 
+                                initial_pose.pose.orientation.z, 
+                                initial_pose.pose.orientation.w])
+        
+        goal_quat = R.from_quat([target_pose.pose.orientation.x, 
+                                target_pose.pose.orientation.y, 
+                                target_pose.pose.orientation.z, 
+                                target_pose.pose.orientation.w])
+        
+        rospy.loginfo(f"Generados {len(trajectory_pos)} puntos en la trayectoria.")
 
-        # Generar trayectorias interpoladas
-        rospy.logwarn(f"init_pose: x={init_pose[0]:.4f}, y={init_pose[1]:.4f}, z={init_pose[2]:.4f}")
-        rospy.logwarn(f"goal_pose: x={goal_pose[0]:.4f}, y={goal_pose[1]:.4f}, z={goal_pose[2]:.4f}")
+        # Interpolación de orientaciones
 
-        trajectory = self.interpolate_trajectory(init_pose, goal_pose, steps)
-        # rospy.loginfo("Interpolación finalizada")
+        # Definir los tiempos de interpolación
+        times = [0, 1] # Esto es arbitrario. Se usa para normalizar con steps. Al final, el tiempo de 0.5 es equivalente al 0.5*steps
 
-        rospy.loginfo(f"Generados {len(trajectory)} puntos en la trayectoria.")
-        if len(trajectory) == 0:
+        # Se crea el objeto Slerp. Esto no aplica la inteporlación esferia, sino q asocia tiempo y cuaternion. Posteriormente se interpola en el tiempo.
+        slerp = Slerp(times, R.from_quat([init_quat.as_quat(), goal_quat.as_quat()]))
+        trajectory_quat = slerp(np.linspace(0, 1, steps)) # Se espacia para el número de pasos
+        
+        if len(trajectory_pos) == 0:
             rospy.logerr("ERROR: No se generaron puntos en la trayectoria. Verifica los valores de start y end.")
+            return
 
         # Publicar poses
-        for point in trajectory:
+        for i in range(steps):
             pose_msg = PoseStamped()
             pose_msg.header.stamp = rospy.Time.now()
             pose_msg.header.frame_id = "fr3_link0"
-            pose_msg.pose.position.x = point[0]
-            pose_msg.pose.position.y = point[1]
-            pose_msg.pose.position.z = point[2]
-            pose_msg.pose.orientation = target_pose.pose.orientation
-
-            rospy.logwarn(f"Publicando equilibrium_pose: x={pose_msg.pose.position.x:.4f}, y={pose_msg.pose.position.y:.4f}, z={pose_msg.pose.position.z:.4f}")
             
-            self.equilibrium_pose_publisher.publish(pose_msg)  # Intentando publicar
-        
+            # Asignar posición interpolada
+            pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = trajectory_pos[i]
+
+            # Asignar orientación interpolada con SLERP
+            quat = trajectory_quat[i].as_quat()
+            pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w = quat
+            
+            rospy.logdebug(f"Publicando equilibrium_pose: x={pose_msg.pose.position.x:.4f}, y={pose_msg.pose.position.y:.4f}, z={pose_msg.pose.position.z:.4f}")
+
+            self.path_planner_state = 1
+            self.equilibrium_pose_publisher.publish(pose_msg)
+            self.path_planner_state_publisher.publish(self.path_planner_state)
+
+            # Verificación de finalización antes de completar la trayectoria
+            current_pos = np.array([self.current_pose.pose.position.x, 
+                                    self.current_pose.pose.position.y, 
+                                    self.current_pose.pose.position.z])
+            
+            # Distancia entre posición actual y deseada
+            distance_error = np.linalg.norm(goal_pos - current_pos)
+
+            if distance_error < threshold:
+                rospy.loginfo(f"Trayectoria completada antes de tiempo. Error final: {distance_error:.6f}")
+                break  # Terminar antes si se ha alcanzado la pose deseada
+
             rate.sleep()
+        
+        # Movimiento completado
+        self.path_planner_state = 2
+        self.path_planner_state_publisher.publish(self.path_planner_state)
 
 
 if __name__ == "__main__":
+
     rospy.loginfo("Nodo iniciado correctamente")
     planner = CartesianPathPlanner()
 
-    # Esperar a obtener la pose actual
-    while planner.current_pose.header.stamp == rospy.Time(0):  
-        rospy.logwarn("Esperando a recibir la pose actual del robot...")
-    rospy.sleep(0.1)
-    planner.initial_pose = planner.current_pose
+    # while (planner.desired_pose == None):
+    #     rospy.sleep(1)
 
-    # Esperar a obtener la pose deseada
-    while planner.desired_pose.header.stamp == rospy.Time(0):  
-        rospy.logwarn("Esperando a recibir la pose deseada del robot...")
+    rospy.loginfo("Esperando la primera pose deseada...")
+    planner.desired_pose = rospy.wait_for_message('/desired_pose', PoseStamped)
 
-    # Asignación de pose
-    target_pose = PoseStamped()
-    target_pose.pose = planner.desired_pose.pose 
 
-    rospy.sleep(2)  # Esperar que todo esté listo antes de enviar
-    planner.send_equilibrium_pose(planner.initial_pose, target_pose)
+    while not rospy.is_shutdown(): # Mantiene un bucle constante
 
-    rospy.spin()
+        # Verificar si hay una nueva pose deseada
+        if planner.desired_pose and (planner.last_desired_pose.header.stamp == rospy.Time(0) or
+                             planner.desired_pose.pose.position != planner.last_desired_pose.pose.position):
+
+
+            # # Estado 0. Esperando nueva pose deseada
+            planner.path_planner_state = 0
+            planner.path_planner_state_publisher.publish(0)
+
+            rospy.loginfo("Nueva pose detectada, iniciando movimiento...")
+            
+            # Esperar pose actual válida
+            start_time = rospy.Time.now()
+            while planner.current_pose.header.stamp == rospy.Time(0):
+                rospy.logwarn("Esperando pose actual...")
+                if (rospy.Time.now() - start_time).to_sec() > 5:  # Timeout de 5 segundos
+                    rospy.logerr("Timeout esperando pose actual. Abortando movimiento.")
+                    break
+                rospy.sleep(1)
+
+            initial_pose = copy.deepcopy(planner.current_pose)
+            planner.last_desired_pose = copy.deepcopy(planner.desired_pose)
+
+            planner.send_equilibrium_pose(initial_pose, planner.desired_pose)
+        
+        rospy.sleep(1)  # Controlar el ciclo del loop
+
