@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
  
 # Import the necessary libraries
-import rospy # Python client library
-from smach import State, StateMachine, Concurrence # State machine library
-import smach_ros # Extensions for SMACH library to integrate it with ROS
-from time import sleep # Handle time
-import time
+import rospy
+from smach import State, StateMachine
+import smach_ros # Libreria Smach para ROS. Máquina de estados finitos
 import numpy as np
 from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from franka_buttons.msg import FrankaButtons
 from std_msgs.msg import Int32
-from skeleton_3d.msg import Skeleton3D  # Mensaje con info de los KP
+from skeleton_3d.msg import Skeleton3D
 from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F
+from visualization_utils import VectorVisualizer
 
 class VisionMonitor:
   """ Clase singleton para almacenar y compartir los KP globalmente """
@@ -32,6 +31,11 @@ class VisionMonitor:
     self.kp_valid = False
 
     self.sub = rospy.Subscriber('/skeleton_3D', Skeleton3D, self.obtain_skeleton3D_callback)
+    
+    # Para DEBUG mediante Rviz. 
+    self.normal_vector_visualizer = VectorVisualizer("/normal_vector_marker")
+    self.forearm_vector_visualizer = VectorVisualizer("/forearm_vector_marker")
+  
 
   def obtain_skeleton3D_callback(self, msg):
     """ Callback que recibe los datos de visión y los almacena globalmente """
@@ -44,6 +48,12 @@ class VisionMonitor:
     if are_kp_valid(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist):
       self.normal_vector = calculate_normal_vector(self.kp_R_Shoulder, self.kp_R_Elbow, self.kp_R_Wrist)
       self.vect_forearm = self.kp_R_Wrist - self.kp_R_Elbow
+      self.vect_forearm = self.vect_forearm / np.linalg.norm(self.vect_forearm) # normalizar
+
+      # DEBUG con RVIZ
+      self.normal_vector_visualizer.publish_vector(self.kp_R_Wrist, self.normal_vector, color=(0.0, 0.0, 1.0), scale=0.2)
+      self.forearm_vector_visualizer.publish_vector(self.kp_R_Wrist, self.vect_forearm, color=(1.0, 0.0, 0.0), scale=0.2)
+
       self.kp_valid = True
     else:
       self.kp_valid = False
@@ -155,6 +165,7 @@ class Reposo(State):
     
     rospy.loginfo('Ejecutando estado de REPOSO...')
 
+    # Mover manipulador a la pose de reposo
     self.init_pose.header.frame_id = "fr3_link0"
     self.init_pose.pose.position = Point(0.13, 0.0, 0.73)
     self.init_pose.pose.orientation = Quaternion(1.0, 0.0, 0.0, 0.0)
@@ -162,6 +173,7 @@ class Reposo(State):
     rospy.logdebug("Publicando pose de reposo")
     self.desired_pose_publisher.publish(self.init_pose)
 
+    # Obtener estado de los botones
     buttons_data = self.buttons.get_latest_data()
 
     if buttons_data['check']:
@@ -239,6 +251,8 @@ class Aproximando(State):
     self.current_pose = PoseStamped()
     self.path_planning_state = -1
 
+    self.vector_visualizer = VectorVisualizer()  # Crear instancia
+
   def current_pose_callback(self, msg):
     rospy.logdebug("Pose actual recibida")
     self.current_pose = msg
@@ -260,10 +274,12 @@ class Aproximando(State):
     userdata.last_kp_R_Wrist = vision_data['kp_R_Wrist']  # Guardar valor para el siguiente estado
     userdata.last_normal_vector = vision_data['normal_vector']
 
+    self.vector_visualizer.publish_vector(vision_data['kp_R_Wrist'], vision_data['normal_vector'], color=(1.0, 0.0, 0.0), scale=0.2)
+
     desired_pose = PoseStamped()
 
     desired_pose.pose.position = calculate_gripper_position(vision_data['kp_R_Wrist'], vision_data['normal_vector'], distancia_aproximacion)
-    desired_pose.pose.orientation = calculate_quaternion_0_F(vision_data['vect_forearm'], -vision_data['normal_vector'])
+    desired_pose.pose.orientation = calculate_quaternion_0_F(-vision_data['vect_forearm'], -vision_data['normal_vector']) # invertir el sentido de los vectores de entrada
     self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
     rospy.loginfo("Ejecutando trayectoria...")
@@ -360,7 +376,7 @@ class Retirada(State):
     # Subscribers
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback) # subscripción al current_pose
     self.path_planning_state_subscriber = rospy.Subscriber("/path_planner_state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
-
+    
     # Publishers
     self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10) # publica en /desired_pose, entrada del planificador de trayectorias
 
