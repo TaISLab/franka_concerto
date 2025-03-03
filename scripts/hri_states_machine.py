@@ -7,13 +7,11 @@ import smach_ros # Extensions for SMACH library to integrate it with ROS
 from time import sleep # Handle time
 import time
 import numpy as np
-from geometry_msgs.msg import PoseStamped, Point
+from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from franka_buttons.msg import FrankaButtons
 from std_msgs.msg import Int32
 from skeleton_3d.msg import Skeleton3D  # Mensaje con info de los KP
 from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F
-
-
 
 class VisionMonitor:
   """ Clase singleton para almacenar y compartir los KP globalmente """
@@ -102,7 +100,6 @@ class ButtonMonitor:
         'y': self.y
     }
 
-
 class GripperManager:
   """ Singleton para manejar el estado y control de la garra """
   _instance = None
@@ -143,29 +140,36 @@ class GripperManager:
     """ Devuelve el estado actual de la garra """
     return self.grip_state
 
-
 # Definir estado REPOSO
 class Reposo(State):
   def __init__(self, buttons):
     State.__init__(self, outcomes=['buscar','esperando'])
 
     self.buttons = buttons  # Guardamos la instancia
+    
+    # publica la pose inicial
+    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10)
+    self.init_pose = PoseStamped()
 
   def execute(self, userdata):
     
     rospy.loginfo('Ejecutando estado de REPOSO...')
+
+    self.init_pose.header.frame_id = "fr3_link0"
+    self.init_pose.pose.position = Point(0.13, 0.0, 0.73)
+    self.init_pose.pose.orientation = Quaternion(1.0, 0.0, 0.0, 0.0)
+    
+    rospy.logdebug("Publicando pose de reposo")
+    self.desired_pose_publisher.publish(self.init_pose)
+
     buttons_data = self.buttons.get_latest_data()
 
     if buttons_data['check']:
-
       return 'buscar'
     
-    rospy.sleep(0.1)
-
+    rospy.sleep(1)
     return 'esperando'  # O algún estado seguro
 
-
-    
 # Estado BUSCANDO. El sistema busca que la muñeca esté dentro del espacio de trabajo
 class Buscando(State):
   def __init__(self, vision, buttons):
@@ -249,7 +253,7 @@ class Aproximando(State):
     rospy.loginfo("Espera de 2 segundos")
     rospy.sleep(2) # Esta espera es para que el humano ponga la mano en el punto deseado de agarre
     
-    distancia_aproximacion = 0
+    distancia_aproximacion = 0.2
     vision_data = self.vision.get_latest_data()
     buttons_data = self.buttons.get_latest_data()
 
@@ -283,7 +287,8 @@ class Agarre(State):
   def __init__(self, buttons, gripper):
     State.__init__(self, 
                    outcomes=['agarrado','abortar'],
-                   input_keys=['last_kp_R_Wrist', 'last_normal_vector'])  # Recibe los valores de APROXIMANDO
+                   input_keys=['last_kp_R_Wrist', 'last_normal_vector'],
+                   output_keys=['last_kp_R_Wrist', 'last_normal_vector'])
 
     # self.vision = vision  # instancia del monitor de vision
     self.buttons = buttons  # instancia del monitor de los botones
@@ -338,16 +343,69 @@ class Agarre(State):
         # return 'abortar'
         break # debug porq no se verifica bien la finalización de trayectorias
 
-
     rospy.logwarn("Cerrar pinza")
     self.gripper.close_gripper() # Cerrar la pinza
     rospy.sleep(2)
     self.gripper.open_gripper()
     rospy.sleep(2)
 
-    
     return 'agarrado'
+
+class Retirada(State):
+  def __init__(self):
+    State.__init__(self, 
+                   outcomes=['retirada','abortar'],
+                   input_keys=['last_kp_R_Wrist', 'last_normal_vector'])  # Exporta estos valores
+
+    # Subscribers
+    self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback) # subscripción al current_pose
+    self.path_planning_state_subscriber = rospy.Subscriber("/path_planner_state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
+
+    # Publishers
+    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10) # publica en /desired_pose, entrada del planificador de trayectorias
+
+    self.current_pose = PoseStamped()
+    self.path_planning_state = -1
+
+  def current_pose_callback(self, msg):
+    rospy.logdebug("Pose actual recibida")
+    self.current_pose = msg
+
+  def path_planning_state_callback(self, msg):
+    self.path_planning_state = msg.data
+    # rospy.logwarn(f"FSM: Estado de la trayectoria recibido: {msg.data}")
+  
+  def execute(self, userdata):
+
+    rospy.loginfo("Ejecutando estado Retirada")
+    rospy.loginfo("Espera de 2 segundos")
+    rospy.sleep(2) # Esta espera es para que el humano ponga la mano en el punto deseado de agarre
     
+    distancia_aproximacion = 0.2
+
+    desired_pose = PoseStamped()
+
+    desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
+    desired_pose.pose.orientation = self.current_pose.pose.orientation # copiamos orientación, debe ser correcta
+    self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
+
+    rospy.loginfo("Ejecutando trayectoria...")
+    self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
+
+    init_time = rospy.Time.now().to_sec()  # Convertir a segundos
+
+    while self.path_planning_state != 2:
+      rospy.sleep(0.1)
+
+      if rospy.Time.now().to_sec() - init_time > 10:  # Restar en segundos
+        rospy.logerr("Error en la trayectoria")
+        # return 'abortar'
+        break # DEBUG porq no se verifica bien la finalización de trayectorias
+      
+    rospy.loginfo("Trayectoria completada")
+    
+    return 'retirada'
+
 def main():
   # Inicializar nodo ROS
   rospy.init_node('fsm_fusion_franka_vision')
@@ -378,7 +436,13 @@ def main():
                                 'last_normal_vector': 'last_normal_vector'})
 
     StateMachine.add('AGARRE', Agarre(buttons, gripper),
-                      transitions={'agarrado': 'REPOSO',
+                      transitions={'agarrado': 'RETIRADA',
+                                  'abortar': 'REPOSO'},
+                      remapping={'last_kp_R_Wrist': 'last_kp_R_Wrist',
+                                'last_normal_vector': 'last_normal_vector'})
+    
+    StateMachine.add('RETIRADA', Retirada(),
+                      transitions={'retirada': 'REPOSO',
                                   'abortar': 'REPOSO'},
                       remapping={'last_kp_R_Wrist': 'last_kp_R_Wrist',
                                 'last_normal_vector': 'last_normal_vector'})
