@@ -22,27 +22,33 @@ def print_pose_named(current_pose, description="Pose"):
                   f"z: {current_pose.pose.orientation.z:.4f}, "
                   f"w: {current_pose.pose.orientation.w:.4f}")
 
-def calculate_quaternion_0_F(vector_target_y, vector_target_z):
+def calculate_quaternion_0_F(vector_target_x, vector_target_z):
     """
-    Calcula la orientación de la pinza según dos vectores:
-    - El eje Y del efector se alinea con `vector_target_y`.
+    Calcula la orientación de la pinza según los vectores X y Z.
+    - El eje X del efector se alinea con `vector_target_x`.
     - El eje Z del efector se alinea con `vector_target_z`.
+    - El eje Y se calcula como producto vectorial de z sobre x, según la regla de la mano derecha.
+    Se construye la matriz de rotación con los vectores x, y, z. Se aplica la matriz de rotación.
+
+    - param: vector_target_x: vector de sentido contrario al vect_forearm. Multiplicar por menos al llamar a la función.
+    - param: vector_target_z: vector de sentido contrario al normal_vector. Multiplicar por menos al llamar a la función.
 
     Retorna:
         Quaternion: Orientación calculada.
     """
-    vector_target_y /= np.linalg.norm(vector_target_y)
-    vector_target_z /= np.linalg.norm(vector_target_z)
-    vector_target_x = np.cross(vector_target_y, vector_target_z)  
+
     vector_target_x /= np.linalg.norm(vector_target_x)
+    vector_target_z /= np.linalg.norm(vector_target_z)
+    vector_target_y = np.cross(vector_target_z, vector_target_x)  
+    vector_target_y /= np.linalg.norm(vector_target_y)
 
     rotation_matrix_0_EE = np.column_stack((vector_target_x, vector_target_y, vector_target_z))
     rot_0_EE = R.from_matrix(rotation_matrix_0_EE)
-    
-    # rot_EE_F = R.from_rotvec(np.radians(-45) * np.array([0, 0, 1]))  
-    rot_EE_F = R.from_rotvec(np.radians(180+90) * np.array([0, 0, 1])) # La configuracion de la pinza ya incluye la rotación entre frange y EE
-    quaternion = (rot_0_EE * rot_EE_F).as_quat()
 
+    # NOTA: La configuración de pinza actual ya incluye la rotación de 45º entre flange y EE. No se debe tener en cuenta en código
+    quaternion = (rot_0_EE).as_quat()
+
+    # Construir orientación
     pose_msg = PoseStamped()
     pose_msg.header.frame_id = "fr3_link0"
     pose_msg.pose.orientation.x = quaternion[0]
