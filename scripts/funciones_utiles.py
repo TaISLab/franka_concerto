@@ -39,7 +39,8 @@ def calculate_quaternion_0_F(vector_target_y, vector_target_z):
     rotation_matrix_0_EE = np.column_stack((vector_target_x, vector_target_y, vector_target_z))
     rot_0_EE = R.from_matrix(rotation_matrix_0_EE)
     
-    rot_EE_F = R.from_rotvec(np.radians(-45) * np.array([0, 0, 1]))  
+    # rot_EE_F = R.from_rotvec(np.radians(-45) * np.array([0, 0, 1]))  
+    rot_EE_F = R.from_rotvec(np.radians(180+90) * np.array([0, 0, 1])) # La configuracion de la pinza ya incluye la rotación entre frange y EE
     quaternion = (rot_0_EE * rot_EE_F).as_quat()
 
     pose_msg = PoseStamped()
@@ -54,9 +55,15 @@ def calculate_quaternion_0_F(vector_target_y, vector_target_z):
 def calculate_gripper_position(kp_R_Wrist, normal_vector, magnitud):
     """ Calcula la posición de la pinza """
     position = Point()
-    position.x = kp_R_Wrist.x + normal_vector[0] * magnitud
-    position.y = kp_R_Wrist.y + normal_vector[1] * magnitud
-    position.z = kp_R_Wrist.z + normal_vector[2] * magnitud
+    # Version para kp como point
+    # position.x = kp_R_Wrist.x + normal_vector[0] * magnitud
+    # position.y = kp_R_Wrist.y + normal_vector[1] * magnitud
+    # position.z = kp_R_Wrist.z + normal_vector[2] * magnitud
+
+    # Modificado porque kp es un array
+    position.x = kp_R_Wrist[0] + normal_vector[0] * magnitud
+    position.y = kp_R_Wrist[1] + normal_vector[1] * magnitud
+    position.z = kp_R_Wrist[2] + normal_vector[2] * magnitud
     return position
 
 def are_kp_valid(*keypoints):
