@@ -49,9 +49,27 @@ class CartesianPathPlanner:
         self.last_desired_pose = PoseStamped()  # Usar PoseStamped vacío
         self.last_desired_pose.header.stamp = rospy.Time(0)  # Indicar que aún no tiene valor
 
-        self.path_planner_state_publisher.publish(0) # Estado inicial
+        self.path_planner_state_publisher.publish(0) # ESTADO_INICIAL
         
         rospy.sleep(1) # Pausa para inicializar
+
+    # Limitación del espacio de trabajo
+    def esta_dentro_espacio_trabajo(self, pose):
+        """
+        Verifica si una pose está dentro del espacio de trabajo definido como un volumen. El origen es fr3_link0, la base del manipulador.
+        Los límites son:
+        :param pose: PoseStamped con la posición del punto.
+
+        :return: True si está dentro, False si está fuera.
+        """
+        x_limits = (-0.35, 0.90)
+        y_limits = (-0.50, 0.90)
+        z_limits = (0.10, 0.90)
+
+        x, y, z = pose.pose.position.x, pose.pose.position.y, pose.pose.position.z
+        return (x_limits[0] <= x <= x_limits[1] and
+                y_limits[0] <= y <= y_limits[1] and
+                z_limits[0] <= z <= z_limits[1])
 
 
     def print_pose(self, pose_stamped, description="Pose"):
@@ -79,22 +97,20 @@ class CartesianPathPlanner:
         # self.desired_pose.pose = msg
         
         # self.desired_pose = msg
-
         self.desired_pose = copy.deepcopy(msg)  # Copia segura del mensaje
     
-
-
-
-    def send_equilibrium_pose(self, initial_pose, target_pose, duration=5.0, rate_hz=30, threshold=0.01, max_iterations=3):
+    def send_equilibrium_pose(self, initial_pose, target_pose, duration=5.0, rate_hz=30, threshold=0.03, max_iterations=1):
         """ 
         Control en lazo cerrado con realimentación de la pose actual.
         Se recalcula la interpolación si hay un error significativo.
         Ahora con interpolación de Splines Cúbicos.
         """
+        
         rospy.logdebug("Path_planner: Iniciando planificación de trayectoria con Splines Cúbicos")
         
         if initial_pose.header.stamp == rospy.Time(0):
             rospy.logwarn("Path_planner: Pose inicial inválida. Abortando planificación.")
+            self.path_planner_state_publisher.publish(-2) # ERROR_GENERICO
             return
         
         rate = rospy.Rate(rate_hz)
@@ -139,7 +155,7 @@ class CartesianPathPlanner:
                 pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w = quat
                 
                 self.equilibrium_pose_publisher.publish(pose_msg)
-                self.path_planner_state_publisher.publish(1)
+                self.path_planner_state_publisher.publish(1) # ESTADO_EJECUTANDOSE
                 
                 current_pos = np.array([self.current_pose.pose.position.x, 
                                         self.current_pose.pose.position.y, 
@@ -148,6 +164,7 @@ class CartesianPathPlanner:
                 
                 if distance_error < threshold:
                     rospy.loginfo(f"Trayectoria completada con error final: {distance_error:.6f}")
+                    self.path_planner_state_publisher.publish(2) # ESTADO_COMPLETADO
                     return
                 
                 rate.sleep()
@@ -156,48 +173,59 @@ class CartesianPathPlanner:
             iteration += 1
         
         rospy.logerr("No se pudo alcanzar la pose deseada tras múltiples iteraciones.")
-
-
-
+        self.path_planner_state_publisher.publish(3) # ESTADO_COMPLETADO_ERROR_CARTESIANO
 
 if __name__ == "__main__":
 
     rospy.loginfo("Nodo iniciado correctamente")
     planner = CartesianPathPlanner()
 
-    # while (planner.desired_pose == None):
-    #     rospy.sleep(1)
+    planner.path_planner_state_publisher.publish(0) # ESTADO_INICIAL
 
-    rospy.loginfo("Esperando la primera pose deseada...")
+    rospy.logdebug("Esperando la primera pose deseada...")
     planner.desired_pose = rospy.wait_for_message('/desired_pose', PoseStamped)
 
-
     while not rospy.is_shutdown(): # Mantiene un bucle constante
-
-        # Verificar si hay una nueva pose deseada
-        if planner.desired_pose and (planner.last_desired_pose.header.stamp == rospy.Time(0) or
-                             planner.desired_pose.pose.position != planner.last_desired_pose.pose.position):
-
-
-            # # Estado 0. Esperando nueva pose deseada
-            planner.path_planner_state = 0
-            planner.path_planner_state_publisher.publish(0)
-
-            rospy.loginfo("Nueva pose detectada, iniciando movimiento...")
-            
-            # Esperar pose actual válida
-            start_time = rospy.Time.now()
-            while planner.current_pose.header.stamp == rospy.Time(0):
-                rospy.logwarn("Esperando pose actual...")
-                if (rospy.Time.now() - start_time).to_sec() > 5:  # Timeout de 5 segundos
-                    rospy.logerr("Timeout esperando pose actual. Abortando movimiento.")
-                    break
-                rospy.sleep(1)
-
-            initial_pose = copy.deepcopy(planner.current_pose)
-            planner.last_desired_pose = copy.deepcopy(planner.desired_pose)
-
-            planner.send_equilibrium_pose(initial_pose, planner.desired_pose)
         
+        # DEBUG
+        # rospy.logdebug(f"last_desired_pose: x={planner.last_desired_pose.pose.position.x:.4f}, y={planner.last_desired_pose.pose.position.y:.4f}, z={planner.last_desired_pose.pose.position.z:.4f}")
+        rospy.logdebug(f"desired_pose: x={planner.desired_pose.pose.position.x:.4f}, y={planner.desired_pose.pose.position.y:.4f}, z={planner.desired_pose.pose.position.z:.4f}")
+
+        
+        
+        # Verificar si hay una nueva pose deseada diferente
+        if planner.desired_pose and (not (np.isclose(planner.desired_pose.pose.position.x, planner.last_desired_pose.pose.position.x, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.position.y, planner.last_desired_pose.pose.position.y, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.position.z, planner.last_desired_pose.pose.position.z, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.orientation.x, planner.last_desired_pose.pose.orientation.x, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.orientation.y, planner.last_desired_pose.pose.orientation.y, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.orientation.z, planner.last_desired_pose.pose.orientation.z, atol=0.01) and
+                                          np.isclose(planner.desired_pose.pose.orientation.w, planner.last_desired_pose.pose.orientation.w, atol=0.01))):
+            
+            planner.path_planner_state_publisher.publish(0) # ESTADO_INICIAL
+
+            # Verificar que esté dentro del volumen de trabajo
+            if planner.esta_dentro_espacio_trabajo(planner.desired_pose):
+                
+                # Esperar pose actual válida
+                start_time = rospy.Time.now()
+                while planner.current_pose.header.stamp == rospy.Time(0):
+                    rospy.logwarn("Esperando pose actual...")
+                    if (rospy.Time.now() - start_time).to_sec() > 5:  # Timeout de 5 segundos
+                        rospy.logerr("Timeout esperando pose actual. Abortando movimiento.")
+                        planner.path_planner_state_publisher.publish(-2) # ERROR_GENERICO
+                        break
+                    rospy.sleep(1)
+
+                initial_pose = copy.deepcopy(planner.current_pose)
+                planner.last_desired_pose = copy.deepcopy(planner.desired_pose)
+
+                rospy.loginfo("Path_planner. Nueva pose recibida, iniciando movimiento...")
+                planner.send_equilibrium_pose(initial_pose, planner.desired_pose)
+
+            else:
+                rospy.logerr("Pose fuera del espacio de trabajo. Abortando...")
+                planner.path_planner_state_publisher.publish(-3) # ERROR_LIMITE_CARTESIANO
+
         rospy.sleep(1)  # Controlar el ciclo del loop
 

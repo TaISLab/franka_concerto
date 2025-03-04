@@ -112,3 +112,7 @@ def obtain_skeleton3D_callback(self, msg):
     else:
         rospy.logwarn("Se detectó NaN en el cálculo de la normal. No se actualiza el valor.")
         self.normal_vector = self.last_normal_vector
+
+############################### FR3 ##################################
+
+

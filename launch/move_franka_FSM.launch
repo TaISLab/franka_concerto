@@ -9,7 +9,7 @@
 
     <!-- Argumentos de configuración del launch -->
 
-    <!-- Transformación estática entre base_link y fr3_link0. Esto permite poder ver el URDF del robot en el RViz del brazo -->
+    <!-- Transformación estática entre base_link y fr3_link0. Esto permite poder ver el URDF del robot en el RViz del brazo  -->
     <node pkg="tf2_ros" type="static_transform_publisher" name="static_tf" args="0 0 0 0 0 0 1 base_link fr3_link0" />
 
     <!-- Nodo para leer el estado de los botones del manipulador -->
@@ -23,16 +23,17 @@
         <param name="password" value="$(arg password)" /> 
     </node>
     
-    <!-- Nodo encargado de publicar los estados deseados del sistema -->
-    <node name="hri_states_publisher" pkg="franka_concerto" type="hri_states_publisher.py" required="true" output="screen" />
+    <!-- Máquina de estados -->
+    <node name="hri_states_machine" pkg="franka_concerto" type="hri_states_machine.py" required="true" output="screen" />
 
-    <!-- Nodo -->
-    <!-- <node name="equilibrium_pose_publisher" pkg="franka_concerto" type="publish_eq_pose.py" required="true" output="log" /> -->
+    <!-- Planificador de trayectorias -->
+    <node name="cartesian_path_planner" pkg="franka_concerto" type="cartesian_path_planner.py" required="false" output="screen"/>
+
 
     <!-- Controlador de impedancia cartesiana. Por ahora no va a ir aqui dentro -->
 
-    <!--  -->
-
+    <!-- Cinemática del brazo -->
+    <include file="$(find human_articular_space)/launch/kinematics_right_arm.launch" pass_all_args="true"/>
 
     <!-- CONTROLADOR DE LA PINZA SUBACT_GRIPPER -->
     <!-- Nodo para la comunicacion entre Arduino y ROS -->

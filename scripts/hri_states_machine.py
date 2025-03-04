@@ -11,6 +11,7 @@ from std_msgs.msg import Int32
 from skeleton_3d.msg import Skeleton3D
 from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F
 from visualization_utils import VectorVisualizer
+import time
 
 class VisionMonitor:
   """ Clase singleton para almacenar y compartir los KP globalmente """
@@ -211,15 +212,15 @@ class Buscando(State):
     vision_data = self.vision.get_latest_data()
     buttons_data = self.buttons.get_latest_data()
 
-    # if (vision_data['kp_valid']) and (self.esta_dentro_del_espacio(vision_data['kp_R_Wrist'])):
-    #   rospy.logwarn("## Dentro del espacio de busqueda ##")
+    if (vision_data['kp_valid']) and (self.esta_dentro_del_espacio(vision_data['kp_R_Wrist'])):
+      rospy.logwarn("## Dentro del espacio de busqueda ##")
 
-    #   if self.tiempo_inicio is None:
-    #     self.tiempo_inicio = time.time()  # inicio del contador
+      if self.tiempo_inicio is None:
+        self.tiempo_inicio = time.time()  # inicio del contador
 
-    #   if time.time() - self.tiempo_inicio >= 2.0:
-    #     rospy.loginfo("KP ha permanecido 2 segundos en el espacio de busqueda.")
-    #     return 'encontrado'  # al siguiente estado  
+      if time.time() - self.tiempo_inicio >= 2.0:
+        rospy.loginfo("KP ha permanecido 2 segundos en el espacio de busqueda.")
+        return 'encontrado'  # al siguiente estado  
 
     if buttons_data['circle']:
       return 'encontrado'
@@ -287,17 +288,18 @@ class Aproximando(State):
 
     init_time = rospy.Time.now().to_sec()  # Convertir a segundos
 
-    while self.path_planning_state != 2:
-      rospy.sleep(0.1)
+    rospy.sleep(1)
 
-      if rospy.Time.now().to_sec() - init_time > 10:  # Restar en segundos
-        rospy.logerr("Error en la trayectoria")
-        # return 'abortar'
-        break # DEBUG porq no se verifica bien la finalización de trayectorias
-      
-    rospy.loginfo("Trayectoria completada")
+    while self.path_planning_state == 1:
+      rospy.sleep(0.1)
     
-    return 'aprox_completada'
+    # Analisis de la finalización de la trayectoria
+    if self.path_planning_state == 2 or self.path_planning_state == 3:
+      rospy.loginfo("Trayectoria completada")
+      return 'aprox_completada'
+    else: # ERROR
+      return 'abortar'
+
   
 class Agarre(State):
   def __init__(self, buttons, gripper):
@@ -344,28 +346,31 @@ class Agarre(State):
     desired_pose = PoseStamped()
     desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
     desired_pose.pose.orientation = self.current_pose.pose.orientation # copiamos orientación, debe ser correcta
-    self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
     rospy.loginfo("Ejecutando trayectoria...")
-    self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
+    self.desired_pose_publisher.publish(desired_pose) 
 
     init_time = rospy.Time.now().to_sec()  # Convertir a segundos
 
-    while self.path_planning_state != 2:
+    rospy.sleep(1)
+
+    while self.path_planning_state == 1:
       rospy.sleep(0.1)
 
-      if rospy.Time.now().to_sec() - init_time > 10:  # Restar en segundos
-        rospy.logerr("Error en la trayectoria")
-        # return 'abortar'
-        break # debug porq no se verifica bien la finalización de trayectorias
+    if self.path_planning_state == 2 or self.path_planning_state == 3:
+      rospy.loginfo("Trayectoria completada")
+      rospy.sleep(1)
+      rospy.logwarn("Cerrar pinza")
+      self.gripper.close_gripper() # Cerrar la pinza
+      rospy.sleep(2)
+      rospy.logwarn("Abrir pinza")
+      self.gripper.open_gripper()
+      rospy.sleep(2)
+      return 'agarrado'
+    else: # ERROR
+      return 'abortar'
 
-    rospy.logwarn("Cerrar pinza")
-    self.gripper.close_gripper() # Cerrar la pinza
-    rospy.sleep(2)
-    self.gripper.open_gripper()
-    rospy.sleep(2)
 
-    return 'agarrado'
 
 class Retirada(State):
   def __init__(self):
@@ -408,19 +413,16 @@ class Retirada(State):
     rospy.loginfo("Ejecutando trayectoria...")
     self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
-    init_time = rospy.Time.now().to_sec()  # Convertir a segundos
+    rospy.sleep(1)
 
-    while self.path_planning_state != 2:
+    while self.path_planning_state == 1:
       rospy.sleep(0.1)
 
-      if rospy.Time.now().to_sec() - init_time > 10:  # Restar en segundos
-        rospy.logerr("Error en la trayectoria")
-        # return 'abortar'
-        break # DEBUG porq no se verifica bien la finalización de trayectorias
-      
-    rospy.loginfo("Trayectoria completada")
-    
-    return 'retirada'
+    if self.path_planning_state == 2 or self.path_planning_state == 3:
+      rospy.loginfo("Trayectoria completada")
+      return 'retirada'
+    else: # ERROR
+      return 'abortar'
 
 def main():
   # Inicializar nodo ROS
