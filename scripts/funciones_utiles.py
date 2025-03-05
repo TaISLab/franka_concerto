@@ -72,6 +72,31 @@ def calculate_gripper_position(kp_R_Wrist, normal_vector, magnitud):
     position.z = kp_R_Wrist[2] + normal_vector[2] * magnitud
     return position
 
+def calculate_gripper_position_forearm_correction(kp_R_Wrist, normal_vector, forearm_vector, magnitud_nv, magnitud_fv):
+    """ Calcula la posición de la pinza
+
+    - param: kp_R_Wrist: Array de componentes X, Y, Z en el espacio cartesiano de la muñeca.
+    - normal_vector: Vector normal al plano conformado por los KP de Hombro-Codo-Muñeca. Positivo hacia fuera del cuerpo.
+    - forearm_vector: Vector entre KP Muñeca y KP Codo. Sentido positivo hacia la muñeca.
+    - magnitud_nv: Distancia aplicada al vector normal para la corrección del punto.
+    - magnitud_fv: Distancia aplicada al vector forearm para la corrección del punto.
+
+    Salida:
+    - Point(x, y, z): Punto 3D corregido
+      
+    """
+    position = Point()
+    # Version para kp como point
+    # position.x = kp_R_Wrist.x + normal_vector[0] * magnitud
+    # position.y = kp_R_Wrist.y + normal_vector[1] * magnitud
+    # position.z = kp_R_Wrist.z + normal_vector[2] * magnitud
+
+    # Modificado porque kp es un array
+    position.x = kp_R_Wrist[0] + normal_vector[0] * magnitud_nv + forearm_vector[0] * magnitud_fv
+    position.y = kp_R_Wrist[1] + normal_vector[1] * magnitud_nv + forearm_vector[1] * magnitud_fv
+    position.z = kp_R_Wrist[2] + normal_vector[2] * magnitud_nv + forearm_vector[2] * magnitud_fv
+    return position
+
 def are_kp_valid(*keypoints):
     """
     Verifica si todos los keypoints son válidos (diferentes de 0.0).

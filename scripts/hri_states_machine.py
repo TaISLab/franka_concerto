@@ -9,7 +9,7 @@ from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from franka_buttons.msg import FrankaButtons
 from std_msgs.msg import Int32
 from skeleton_3d.msg import Skeleton3D
-from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F
+from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F, calculate_gripper_position_forearm_correction
 from visualization_utils import VectorVisualizer
 import time
 
@@ -225,7 +225,6 @@ class Buscando(State):
     if buttons_data['circle']:
       return 'encontrado'
 
-
     if buttons_data['cross']:
       return 'abortar'
 
@@ -237,7 +236,7 @@ class Aproximando(State):
   def __init__(self, vision, buttons):
     State.__init__(self, 
                    outcomes=['aprox_completada','abortar'],
-                   output_keys=['last_kp_R_Wrist', 'last_normal_vector'])  # Exporta estos valores
+                   output_keys=['last_kp_R_Wrist', 'last_normal_vector', 'last_forearm_vector'])  # Exporta estos valores
 
     self.vision = vision  # instancia del monitor de vision
     self.buttons = buttons  # instancia del monitor de los botones
@@ -274,12 +273,14 @@ class Aproximando(State):
 
     userdata.last_kp_R_Wrist = vision_data['kp_R_Wrist']  # Guardar valor para el siguiente estado
     userdata.last_normal_vector = vision_data['normal_vector']
+    userdata.last_forearm_vector = vision_data['vect_forearm']
 
     self.vector_visualizer.publish_vector(vision_data['kp_R_Wrist'], vision_data['normal_vector'], color=(1.0, 0.0, 0.0), scale=0.2)
 
     desired_pose = PoseStamped()
 
-    desired_pose.pose.position = calculate_gripper_position(vision_data['kp_R_Wrist'], vision_data['normal_vector'], distancia_aproximacion)
+    # desired_pose.pose.position = calculate_gripper_position(vision_data['kp_R_Wrist'], vision_data['normal_vector'], distancia_aproximacion)
+    desired_pose.pose.position = calculate_gripper_position_forearm_correction(vision_data['kp_R_Wrist'], vision_data['normal_vector'],vision_data['vect_forearm'], distancia_aproximacion, -0.1)
     desired_pose.pose.orientation = calculate_quaternion_0_F(-vision_data['vect_forearm'], -vision_data['normal_vector']) # invertir el sentido de los vectores de entrada
     self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
@@ -305,8 +306,8 @@ class Agarre(State):
   def __init__(self, buttons, gripper):
     State.__init__(self, 
                    outcomes=['agarrado','abortar'],
-                   input_keys=['last_kp_R_Wrist', 'last_normal_vector'],
-                   output_keys=['last_kp_R_Wrist', 'last_normal_vector'])
+                   input_keys=['last_kp_R_Wrist', 'last_normal_vector', 'last_forearm_vector'],
+                   output_keys=['last_kp_R_Wrist', 'last_normal_vector', 'last_forearm_vector'])
 
     # self.vision = vision  # instancia del monitor de vision
     self.buttons = buttons  # instancia del monitor de los botones
@@ -344,7 +345,8 @@ class Agarre(State):
     # self.gripper.open_gripper() # Abrir la pinza
     
     desired_pose = PoseStamped()
-    desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
+    # desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
+    desired_pose.pose.position = calculate_gripper_position_forearm_correction(userdata.last_kp_R_Wrist, userdata.last_normal_vector, userdata.last_forearm_vector, distancia_aproximacion, -0.1)
     desired_pose.pose.orientation = self.current_pose.pose.orientation # copiamos orientación, debe ser correcta
 
     rospy.loginfo("Ejecutando trayectoria...")
@@ -376,7 +378,7 @@ class Retirada(State):
   def __init__(self):
     State.__init__(self, 
                    outcomes=['retirada','abortar'],
-                   input_keys=['last_kp_R_Wrist', 'last_normal_vector'])  # Exporta estos valores
+                   input_keys=['last_kp_R_Wrist', 'last_normal_vector', 'last_forearm_vector'])  # Exporta estos valores
 
     # Subscribers
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback) # subscripción al current_pose
@@ -406,7 +408,8 @@ class Retirada(State):
 
     desired_pose = PoseStamped()
 
-    desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
+    # desired_pose.pose.position = calculate_gripper_position(userdata.last_kp_R_Wrist, userdata.last_normal_vector, distancia_aproximacion)
+    desired_pose.pose.position = calculate_gripper_position_forearm_correction(userdata.last_kp_R_Wrist, userdata.last_normal_vector, userdata.last_forearm_vector, distancia_aproximacion, -0.1)
     desired_pose.pose.orientation = self.current_pose.pose.orientation # copiamos orientación, debe ser correcta
     self.desired_pose_publisher.publish(desired_pose) # publicar el kp q le pasa el estado anterior
 
@@ -451,19 +454,22 @@ def main():
                       transitions={'aprox_completada': 'AGARRE',
                                   'abortar': 'REPOSO'},
                       remapping={'last_kp_R_Wrist': 'last_kp_R_Wrist',
-                                'last_normal_vector': 'last_normal_vector'})
+                                'last_normal_vector': 'last_normal_vector',
+                                'last_forearm_vector': 'last_forearm_vector'})
 
     StateMachine.add('AGARRE', Agarre(buttons, gripper),
                       transitions={'agarrado': 'RETIRADA',
                                   'abortar': 'REPOSO'},
                       remapping={'last_kp_R_Wrist': 'last_kp_R_Wrist',
-                                'last_normal_vector': 'last_normal_vector'})
+                                'last_normal_vector': 'last_normal_vector',
+                                'last_forearm_vector': 'last_forearm_vector'})
     
     StateMachine.add('RETIRADA', Retirada(),
                       transitions={'retirada': 'REPOSO',
                                   'abortar': 'REPOSO'},
                       remapping={'last_kp_R_Wrist': 'last_kp_R_Wrist',
-                                'last_normal_vector': 'last_normal_vector'})
+                                'last_normal_vector': 'last_normal_vector',
+                                'last_forearm_vector': 'last_forearm_vector'})
 
   # Servidor de introspección para visualizar en SMACH Viewer
   sis = smach_ros.IntrospectionServer('server_name', sm_fsm, '/SM_ROOT')
