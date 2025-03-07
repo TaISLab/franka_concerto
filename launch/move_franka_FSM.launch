@@ -27,22 +27,22 @@
     <node name="hri_states_machine" pkg="franka_concerto" type="hri_states_machine.py" required="true" output="screen" />
 
     <!-- Planificador de trayectorias -->
-    <node name="cartesian_path_planner" pkg="franka_concerto" type="cartesian_path_planner.py" required="false" output="screen"/>
-
-
-    <!-- Controlador de impedancia cartesiana. Por ahora no va a ir aqui dentro -->
+    <group ns="cartesian_path">
+        <node name="planner_node" pkg="franka_concerto" type="cartesian_path_planner.py" required="false" output="screen"/>
+    </group>
 
     <!-- Cinemática del brazo -->
     <include file="$(find human_articular_space)/launch/kinematics_right_arm.launch" pass_all_args="true"/>
 
     <!-- CONTROLADOR DE LA PINZA SUBACT_GRIPPER -->
-    <!-- Nodo para la comunicacion entre Arduino y ROS -->
-    <node name="serial_sync" pkg="subact_gripper" type="serialSyncroV2.py" required="false" output="screen"/>
-  
-    <!-- Nodo encargado de abrir y cerrar la pinza mediante la subscripción al topic /gripper_state_desired. -->
-    <node name="gripper_control" pkg="subact_gripper" type="gripper_control_rco.py" required="false" output="log" />
+    <group ns="gripper_4F">
+        <!-- Nodo para la comunicacion entre Arduino y ROS -->
+        <node name="serial_sync" pkg="subact_gripper" type="serialSyncroV2.py" required="false" output="screen"/>
+    
+        <!-- Nodo encargado de abrir y cerrar la pinza mediante la subscripción al topic /gripper_state_desired. -->
+        <node name="gripper_control" pkg="subact_gripper" type="gripper_control_rco.py" required="false" output="log" />
 
-    <!-- Nodo encargado de publicar el current_grip_state. estado actual del agarre -->
-    <node name="grip_state_pub" pkg="subact_gripper" type="grip_state_publisher_rco.py" required="true" output="log" />
-
+        <!-- Nodo encargado de publicar el current_grip_state. estado actual del agarre -->
+        <node name="grip_state_pub" pkg="subact_gripper" type="grip_state_publisher_rco.py" required="true" output="log" />
+    </group>
 </launch>
