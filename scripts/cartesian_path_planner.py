@@ -29,14 +29,14 @@ import time
 
 class CartesianPathPlanner:
     def __init__(self):
-        rospy.init_node("cartesian_path_planner", log_level=rospy.DEBUG)
+        rospy.init_node("cartesian_path_planner_node", log_level=rospy.DEBUG)
 
         # Publicadores
         self.equilibrium_pose_publisher = rospy.Publisher("/cartesian_impedance_example_controller/equilibrium_pose", PoseStamped, queue_size=10)
-        self.path_planner_state_publisher = rospy.Publisher("/path_planner_state", Int32, queue_size=2)
+        self.path_planner_state_publisher = rospy.Publisher("/cartesian_path/state", Int32, queue_size=2)
 
         # Subscriptores
-        rospy.Subscriber('/desired_pose', PoseStamped, self.obtain_desired_pose_callback, queue_size=1) # Subscripción a la pose deseada
+        rospy.Subscriber('/cartesian_path/desired_pose', PoseStamped, self.obtain_desired_pose_callback, queue_size=1) # Subscripción a la pose deseada
         rospy.Subscriber('/current_pose', PoseStamped, self.obtain_current_pose_callback, queue_size=10) # Subscripción a la pose actual
         
         # Inicialización de variables
@@ -183,7 +183,7 @@ if __name__ == "__main__":
     planner.path_planner_state_publisher.publish(0) # ESTADO_INICIAL
 
     rospy.logdebug("Esperando la primera pose deseada...")
-    planner.desired_pose = rospy.wait_for_message('/desired_pose', PoseStamped)
+    planner.desired_pose = rospy.wait_for_message('/cartesian_path/desired_pose', PoseStamped)
 
     while not rospy.is_shutdown(): # Mantiene un bucle constante
         
