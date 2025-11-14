@@ -2,8 +2,9 @@
 
 import rospy
 import numpy as np
-from geometry_msgs.msg import PoseStamped, Point
+from geometry_msgs.msg import PoseStamped, Point, Vector3
 from scipy.spatial.transform import Rotation as R
+
 
 def print_pose_named(current_pose, description="Pose"):
     """
@@ -138,6 +139,63 @@ def obtain_skeleton3D_callback(self, msg):
         rospy.logwarn("Se detectó NaN en el cálculo de la normal. No se actualiza el valor.")
         self.normal_vector = self.last_normal_vector
 
-############################### FR3 ##################################
+############################### Funciones de conversión entre np.array y Point ##################################
+
+def np_array_to_point(np_array):
+    """
+    Convierte un np.array a geometry_msgs/Point.
+    
+    :param np_array: np.array de 3 elementos
+    :return: geometry_msgs/Point con las coordenadas del np_array
+    """
+    if len(np_array) != 3:
+        raise ValueError("El np.array debe tener 3 elementos.")
+    
+    point = Point()
+    point.x = np_array[0]
+    point.y = np_array[1]
+    point.z = np_array[2]
+    
+    return point
+
+def np_array_to_vector3(np_array):
+    """
+    Convierte un np.array a geometry_msgs/Vector3.
+    
+    :param np_array: np.array de 3 elementos
+    :return: geometry_msgs/Vector3 con las coordenadas del np_array
+    """
+    if len(np_array) != 3:
+        raise ValueError("El np.array debe tener 3 elementos.")
+    
+    vector = Vector3()
+    vector.x = np_array[0]
+    vector.y = np_array[1]
+    vector.z = np_array[2]
+    
+    return vector
+
+def point_to_np_array(point):
+    """
+    Convierte geometry_msgs/Point a un np.array.
+    
+    :param point: geometry_msgs/Point
+    :return: np.array con las coordenadas del Point
+    """
+    return np.array([point.x, point.y, point.z])
+
+def vector3_to_np_array(vector):
+    """
+    Convierte geometry_msgs/Vector3 a un np.array.
+    
+    :param vector: geometry_msgs/Vector3
+    :return: np.array con las coordenadas del Vector3
+    """
+    return np.array([vector.x, vector.y, vector.z])
+
+
+
+
+
 
 

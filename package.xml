@@ -18,6 +18,8 @@
 
   <!-- Build depend -->
   <build_depend>franka_msgs</build_depend>
+  <build_depend>actionlib</build_depend>
+  <build_depend>actionlib_msgs</build_depend>
 
   <!-- ROS Python library dependencies -->
   <depend>rospy</depend>
@@ -43,6 +45,8 @@
   <!-- Runtime dependency for generated message types -->
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>franka_msgs</exec_depend>
+  <exec_depend>actionlib</exec_depend>
+  <exec_depend>actionlib_msgs</exec_depend>
 
   <export>
     <!-- Other tools can request additional information be placed here -->

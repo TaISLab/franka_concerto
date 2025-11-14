@@ -34,6 +34,9 @@
     <!-- Cinemática del brazo -->
     <include file="$(find human_articular_space)/launch/kinematics_right_arm.launch" pass_all_args="true"/>
 
+    <!-- Modelo fusionado -->
+    <node name="fusion_model_node" pkg="franka_concerto" type="fusion_model.py" required="true" output="screen" />
+
     <!-- CONTROLADOR DE LA PINZA SUBACT_GRIPPER -->
     <group ns="gripper_4F">
         <!-- Nodo para la comunicacion entre Arduino y ROS -->
@@ -45,4 +48,7 @@
         <!-- Nodo encargado de publicar el current_grip_state. estado actual del agarre -->
         <node name="grip_state_pub" pkg="subact_gripper" type="grip_state_publisher_rco.py" required="true" output="log" />
     </group>
+
+
+
 </launch>

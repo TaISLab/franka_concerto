@@ -1,0 +1,14 @@
+<launch>
+
+    <node pkg="franka_concerto"
+          type="hri_bt.py"
+          name="hri_behavior_tree"
+          output="screen"
+          respawn="false" />
+
+    <node pkg="rqt_gui"
+          type="rqt_gui"
+          name="rqt_py_trees_visualizer"
+          args="--standalone rqt_py_trees" />
+
+</launch>

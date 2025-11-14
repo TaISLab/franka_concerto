@@ -9,8 +9,8 @@ from geometry_msgs.msg import PoseStamped, Point, Quaternion
 from franka_buttons.msg import FrankaButtons
 from std_msgs.msg import Int32
 from skeleton_3d.msg import Skeleton3D
-from funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F, calculate_gripper_position_forearm_correction
-from visualization_utils import VectorVisualizer
+from franka_concerto.funciones_utiles import are_kp_valid, calculate_normal_vector, print_pose_named, calculate_gripper_position, calculate_quaternion_0_F, calculate_gripper_position_forearm_correction
+from franka_concerto.visualization_utils import VectorVisualizer
 import time
 
 class VisionMonitor:
@@ -125,8 +125,8 @@ class GripperManager:
     """ Inicialización de ROS """
     self.grip_state = -1  # False = Cerrado, True = Abierto
     # self.gripper_state_d = -1  # False = Cerrado, True = Abierto
-    self.sub = rospy.Subscriber("/grip_state", Int32, self.grip_callback)
-    self.pub = rospy.Publisher('/gripper_state_desired', Int32, queue_size=10)
+    self.sub = rospy.Subscriber("/gripper_4F/current_grip_state", Int32, self.grip_callback)
+    self.pub = rospy.Publisher('/gripper_4F/desired_state', Int32, queue_size=10)
 
   def grip_callback(self, msg):
     """ Callback que actualiza el estado de la garra
@@ -159,7 +159,7 @@ class Reposo(State):
     self.buttons = buttons  # Guardamos la instancia
     
     # publica la pose inicial
-    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10)
+    self.desired_pose_publisher = rospy.Publisher("/cartesian_path/desired_pose", PoseStamped, queue_size=10)
     self.init_pose = PoseStamped()
 
   def execute(self, userdata):
@@ -243,10 +243,10 @@ class Aproximando(State):
 
     # Subscribers
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback) # subscripción al current_pose
-    self.path_planning_state_subscriber = rospy.Subscriber("/path_planner_state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
+    self.path_planning_state_subscriber = rospy.Subscriber("/cartesian_path/state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
 
     # Publishers
-    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10) # publica en /desired_pose, entrada del planificador de trayectorias
+    self.desired_pose_publisher = rospy.Publisher("/cartesian_path/desired_pose", PoseStamped, queue_size=10) # publica en /cartesian_planner/desired_pose, entrada del planificador de trayectorias
 
     self.current_pose = PoseStamped()
     self.path_planning_state = -1
@@ -317,10 +317,10 @@ class Agarre(State):
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback)
     
     # subscripción al estado de la planificación
-    self.path_planning_state_subscriber = rospy.Subscriber("/path_planner_state", Int32, self.path_planning_state_callback)
+    self.path_planning_state_subscriber = rospy.Subscriber("/cartesian_path/state", Int32, self.path_planning_state_callback)
 
-    # publica en /desired_pose, entrada del planificador de trayectorias
-    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10)
+    # publica en /cartesian_path/desired_pose, entrada del planificador de trayectorias
+    self.desired_pose_publisher = rospy.Publisher("/cartesian_path/desired_pose", PoseStamped, queue_size=10)
 
     self.current_pose = PoseStamped()
     self.path_planning_state = -1
@@ -382,10 +382,10 @@ class Retirada(State):
 
     # Subscribers
     self.current_pose_subscriber = rospy.Subscriber("/current_pose", PoseStamped, self.current_pose_callback) # subscripción al current_pose
-    self.path_planning_state_subscriber = rospy.Subscriber("/path_planner_state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
+    self.path_planning_state_subscriber = rospy.Subscriber("/cartesian_path/state", Int32, self.path_planning_state_callback) # subscripción al estado de la planificación
     
     # Publishers
-    self.desired_pose_publisher = rospy.Publisher("/desired_pose", PoseStamped, queue_size=10) # publica en /desired_pose, entrada del planificador de trayectorias
+    self.desired_pose_publisher = rospy.Publisher("/cartesian_path/desired_pose", PoseStamped, queue_size=10) # publica en /cartesian_path_planner/desired_pose, entrada del planificador de trayectorias
 
     self.current_pose = PoseStamped()
     self.path_planning_state = -1

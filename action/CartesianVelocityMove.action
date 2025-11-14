@@ -1,0 +1,10 @@
+# Objetivo: Mover el robot a una pose usando el controlador de velocidad cartesiana.
+geometry_msgs/PoseStamped target_pose
+float32 max_linear_velocity
+float32 max_angular_velocity
+---
+bool success
+string message
+---
+geometry_msgs/PoseStamped current_pose
+float32 distance_to_goal

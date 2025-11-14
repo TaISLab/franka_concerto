@@ -10,13 +10,26 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs # Para el nodo conversor
   skeleton_3d # This package contains the Skeleton3D message
   message_generation
-  
+  actionlib
+  actionlib_msgs
   urdf
 )
+
+catkin_python_setup() # Para ejecutar el setup.py para ubicar los módulos. 
 
 ## Specify the message files to be generated
 add_message_files(
   FILES
+  FusionModel.msg
+)
+
+add_action_files(
+  DIRECTORY action
+  FILES 
+  MoveFR3.action
+  CartesianImpedanceMove.action
+  CartesianVelocityMove.action
+  HomingEffortMove.action
 
 )
 
@@ -24,10 +37,10 @@ add_message_files(
 generate_messages(
   DEPENDENCIES
   std_msgs
-  geometry_msgs
-  sensor_msgs # Para el nodo conversor
-  skeleton_3d # This package contains the Skeleton3D message
-  
+  geometry_msgs  # Asegúrate de que geometry_msgs esté aquí
+  sensor_msgs
+  skeleton_3d
+  actionlib_msgs
 )
 
 ## Define the package and its dependencies
@@ -39,6 +52,8 @@ catkin_package(
     sensor_msgs # Para el nodo conversor
     skeleton_3d # This package contains the Skeleton3D message
     message_runtime
+    actionlib
+    actionlib_msgs
     
 )
 
@@ -54,6 +69,7 @@ install(PROGRAMS
   scripts/cartesian_path_planner.py
   scripts/desired_pose_publisher.py
   scripts/hri_states_machine.py
+  scripts/fusion_model_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

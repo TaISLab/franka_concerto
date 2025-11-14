@@ -1,0 +1,19 @@
+# --- GOAL ---
+# Definir el tipo de tarea
+uint8 TASK_HOMING = 0
+uint8 TASK_IMPEDANCE_MOVE = 1
+
+uint8 task_type       # Uno de los valores (HOMING o IMPEDANCE_MOVE)
+
+geometry_msgs/PoseStamped target_pose # Usado solo para IMPEDANCE_MOVE
+float32 max_velocity # Límite de velocidad (ej. 0.2 m/s)
+
+---
+# --- RESULT ---
+bool success
+string message
+
+---
+# --- FEEDBACK ---
+geometry_msgs/PoseStamped current_pose
+float64 distance_to_goal

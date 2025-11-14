@@ -7,6 +7,8 @@ from std_msgs.msg import Int32
 import copy
 from scipy.spatial.transform import Rotation as R, Slerp
 import scipy.interpolate
+
+import scipy.interpolate
 import time
 
 # Publicar Eq pose a mano. Pon en terminal esto:
@@ -27,16 +29,17 @@ import time
 
 class CartesianPathPlanner:
     def __init__(self):
-        rospy.init_node("cartesian_path_planner_node", log_level=rospy.DEBUG)
+        rospy.init_node("rehab_path_planner_node", log_level=rospy.DEBUG)
 
         # Publicadores
         self.equilibrium_pose_publisher = rospy.Publisher("/cartesian_impedance_example_controller/equilibrium_pose", PoseStamped, queue_size=10)
-        self.path_planner_state_publisher = rospy.Publisher("/cartesian_path/state", Int32, queue_size=2)
+        self.path_planner_state_publisher = rospy.Publisher("/rehab_path/state", Int32, queue_size=2)
 
         # Subscriptores
-        rospy.Subscriber('/cartesian_path/desired_pose', PoseStamped, self.obtain_desired_pose_callback, queue_size=1) # Subscripción a la pose deseada
+        rospy.Subscriber('/rehab_path/desired_pose', PoseStamped, self.obtain_desired_pose_callback, queue_size=1) # Subscripción a la pose deseada
         rospy.Subscriber('/current_pose', PoseStamped, self.obtain_current_pose_callback, queue_size=10) # Subscripción a la pose actual
-        
+        rospy.Subscriber('/fusion_model')
+
         # Inicialización de variables
         self.current_pose = PoseStamped()
         self.current_pose.header.stamp = rospy.Time(0)  # Indicar que no tiene datos aún
@@ -52,22 +55,22 @@ class CartesianPathPlanner:
         rospy.sleep(1) # Pausa para inicializar
 
     # Limitación del espacio de trabajo
-    def esta_dentro_espacio_trabajo(self, pose):
-        """
-        Verifica si una pose está dentro del espacio de trabajo definido como un volumen. El origen es fr3_link0, la base del manipulador.
-        Los límites son:
-        :param pose: PoseStamped con la posición del punto.
+    # def esta_dentro_espacio_trabajo(self, pose):
+    #     """
+    #     Verifica si una pose está dentro del espacio de trabajo definido como un volumen. El origen es fr3_link0, la base del manipulador.
+    #     Los límites son:
+    #     :param pose: PoseStamped con la posición del punto.
 
-        :return: True si está dentro, False si está fuera.
-        """
-        x_limits = (-0.35, 0.90)
-        y_limits = (-0.80, 0.80)
-        z_limits = (0.10, 0.90)
+    #     :return: True si está dentro, False si está fuera.
+    #     """
+    #     x_limits = (-0.35, 0.90)
+    #     y_limits = (-0.50, 0.90)
+    #     z_limits = (0.10, 0.90)
 
-        x, y, z = pose.pose.position.x, pose.pose.position.y, pose.pose.position.z
-        return (x_limits[0] <= x <= x_limits[1] and
-                y_limits[0] <= y <= y_limits[1] and
-                z_limits[0] <= z <= z_limits[1])
+    #     x, y, z = pose.pose.position.x, pose.pose.position.y, pose.pose.position.z
+    #     return (x_limits[0] <= x <= x_limits[1] and
+    #             y_limits[0] <= y <= y_limits[1] and
+    #             z_limits[0] <= z <= z_limits[1])
 
 
     def print_pose(self, pose_stamped, description="Pose"):

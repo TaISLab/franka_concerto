@@ -1,0 +1,11 @@
+# Objetivo: Homing usando el controlador de esfuerzo articular.
+# Si no se pasa posición articular, se usa una por defecto.
+# Se puede especificar duración del movimiento.
+float64[] joint_positions   # Opcional, si vacío se usa por defecto
+float32 duration           # Opcional, si 0 se usa por defecto
+---
+bool success
+string message
+---
+float64[] current_positions
+float32 time_remaining
