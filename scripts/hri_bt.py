@@ -23,6 +23,10 @@ import actionlib
 from franka_concerto.msg import MoveFR3Action, MoveFR3Goal
 from actionlib_msgs.msg import GoalStatus
 from franka_concerto.funciones_utiles import calculate_gripper_position_forearm_correction, calculate_quaternion_0_F
+from collections import deque
+from franka_concerto.visualization_utils import VectorVisualizer, PointVisualizer
+from franka_buttons.msg import FrankaButtons
+ROSBAG_PLAYING = False # Evitar usar timestamps del bag para filtrar datos antiguos
 
 # --- Nodos Hoja (Plantillas) ---
 # Rellena la lógica de ROS (subs, pubs, services, actions) aquí.
@@ -79,13 +83,27 @@ class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
         self.relbow = None
         self.rshoulder = None
         self.subscriber = None
+        self.kp_timestamp = None
 
     def setup(self, timeout):
         self.subscriber = rospy.Subscriber(self.topic_name, Skeleton3D, self.callback)
+        try:
+            # Visualizadores para RViz (vector normal y punto de muñeca)
+            self.vec_vis = VectorVisualizer(topic_name="/wrist_normal_marker", frame_id="fr3_link0")
+            self.point_vis = PointVisualizer(topic_name="/wrist_point_marker", frame_id="fr3_link0")
+        except Exception as e:
+            rospy.logwarn(f"[SubscribeSkeleton3D] No se pudo crear visualizadores RViz: {e}")
+            self.vec_vis = None
+            self.point_vis = None
         return True
 
     def callback(self, msg):
         # Extrae los keypoints relevantes
+        if ROSBAG_PLAYING:
+            self.kp_timestamp = rospy.Time.now()
+        else: 
+            self.kp_timestamp = msg.header.stamp # para filtrar datos antiguos
+
         kp_rwrist = msg.keypoints[10]
         kp_relbow = msg.keypoints[8]
         kp_rshoulder = msg.keypoints[6]
@@ -123,6 +141,18 @@ class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
             rospy.logwarn_throttle(10, "[SubscribeSkeleton3D] Vector normal casi cero; usando fallback (0,0,1)")
             normal = np.array([0.0, 0.0, 1.0])
         self.normal = normal
+        # Publicar visualizaciones en RViz si están disponibles
+        try:
+            if hasattr(self, 'vec_vis') and self.vec_vis is not None:
+                origin = [self.rwrist.x, self.rwrist.y, self.rwrist.z]
+                # Color verde para el vector normal
+                self.vec_vis.publish_vector(origin, normal, color=(0.0, 1.0, 0.0), scale=0.2)
+            if hasattr(self, 'point_vis') and self.point_vis is not None:
+                self.point_vis.publish_point(np.array([self.rwrist.x, self.rwrist.y, self.rwrist.z]), color=(1.0, 0.0, 0.0), scale=0.03)
+        except Exception as e:
+            rospy.logwarn_throttle(30, f"[SubscribeSkeleton3D] Error publicando en RViz: {e}")
+
+        
 
     def update(self):
         if self.rshoulder is not None and self.relbow is not None and self.rwrist is not None and hasattr(self, "normal"):
@@ -130,6 +160,7 @@ class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
             py_trees.blackboard.Blackboard().set("relbow_kp", self.relbow)
             py_trees.blackboard.Blackboard().set("rwrist_kp", self.rwrist)
             py_trees.blackboard.Blackboard().set("wrist_normal", self.normal)
+            py_trees.blackboard.Blackboard().set("skeleton_timestamp", self.kp_timestamp)
             rospy.loginfo("Skeleton3D keypoints and normal set on blackboard.")
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
@@ -182,6 +213,35 @@ class SubscribeEEPose(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
+class SubscribeFrankaButtons(py_trees.behaviour.Behaviour):
+    """
+    Subscribe to /franka_buttons (franka_buttons/FrankaButtons)
+    """
+    def __init__(self, name="SubscribeFrankaButtons"):
+        super(SubscribeFrankaButtons, self).__init__(name="SubscribeFrankaButtons")
+        self.blackboard = py_trees.blackboard.Blackboard()
+        
+        self.topic_name = "/franka_buttons"
+        self.subscriber = None
+        self.cross = None
+
+    def setup(self, timeout):
+        self.subscriber = rospy.Subscriber(self.topic_name, FrankaButtons, self.callback)
+        return True
+    
+    def callback(self, msg):
+        self.cross = msg.cross
+
+        if self.cross == True:
+            rospy.loginfo("Franka Button CROSS pressed. Reset homing_done latch.")
+            self.blackboard.set("homing_done", False)
+            self.blackboard.set("approach_done", False)
+            self.blackboard.set("contact_done", False)
+
+    
+    def update(self):
+        
+        return py_trees.common.Status.RUNNING
 
 # --- Hojas de Pre-checks ---
 
@@ -221,12 +281,12 @@ class IsGripperOpen(py_trees.behaviour.Behaviour):
         rospy.loginfo("Check: Gripper Open? -> YES")
         return py_trees.common.Status.SUCCESS
 
-class OpenGripper(py_trees.behaviour.Behaviour):
-    """(Acción) Abrir garra"""
-    def __init__(self, name="OpenGripper"):
-        super(OpenGripper, self).__init__(name)
-        
-        self.pwm_to_open = -100  # Valor de PWM para abrir la garra
+class GripperPWMAction(py_trees.behaviour.Behaviour):
+    """Acción genérica para controlar la garra por PWM."""
+    def __init__(self, name="GripperPWMAction", pwm_value=-100, closed_state=False):
+        super(GripperPWMAction, self).__init__(name)
+        self.pwm_value = pwm_value
+        self.closed_state = closed_state
         self.blackboard = py_trees.blackboard.Blackboard()
 
     def setup(self, timeout):
@@ -235,36 +295,39 @@ class OpenGripper(py_trees.behaviour.Behaviour):
         return super().setup(timeout)
 
     def initialise(self):
-        
         try:
-            response = self.set_pwm_service(self.pwm_to_open) # Llamar al servicio 
-
+            response = self.set_pwm_service(self.pwm_value)
             if response.success:
                 self.service_call_succeeded = True
-                rospy.loginfo(f"[{self.name}] Gripper Open Command Sent!")
+                rospy.loginfo(f"[{self.name}] Gripper PWM {self.pwm_value} Command Sent!")
             else:
                 self.service_call_succeeded = False
-                rospy.logerr(f"[{self.name}] Gripper Open Command Failed!")
+                rospy.logerr(f"[{self.name}] Gripper PWM {self.pwm_value} Command Failed!")
         except rospy.ServiceException as e:
             rospy.logerr(f"Service call failed: {e}")
-        
-    def update(self):
 
-        # Si la llamada en initialise() falló, fallamos inmediatamente.
+    def update(self):
         if not self.service_call_succeeded:
             return py_trees.common.Status.FAILURE
-        
-        gripper_closed_status = self.blackboard.get("gripper_closed")
 
-        # Comprobando el estado de la garra
-        if gripper_closed_status is False: # garra abierta
-            rospy.loginfo(f"[{self.name}] Gripper is now Open!")
+        gripper_closed_status = self.blackboard.get("gripper_closed")
+        if gripper_closed_status == self.closed_state:
+            rospy.loginfo(f"[{self.name}] Gripper state reached ({self.closed_state})!")
             return py_trees.common.Status.SUCCESS
-        elif gripper_closed_status is True: # garra cerrada
+        elif gripper_closed_status is not None:
             return py_trees.common.Status.RUNNING
-        else: # None. blackboard sin datos
+        else:
             rospy.logdebug(f"[{self.name}] Esperando datos en blackboard 'gripper_closed'...")
             return py_trees.common.Status.RUNNING
+
+# Especializaciones
+class OpenGripper(GripperPWMAction):
+    def __init__(self, name="OpenGripper"):
+        super(OpenGripper, self).__init__(name=name, pwm_value=-100, closed_state=False)
+
+class CloseGripper(GripperPWMAction):
+    def __init__(self, name="CloseGripper"):
+        super(CloseGripper, self).__init__(name=name, pwm_value=300, closed_state=True)
 
 class IsAtHomePose(py_trees.behaviour.Behaviour):
     """(Condición) Robot pose inicial?"""
@@ -301,7 +364,12 @@ class IsAtHomePose(py_trees.behaviour.Behaviour):
 
     def update(self):
         rospy.logdebug("Check: At Home Pose? (tolerant)")
-        ee_pose = self.blackboard.get("ee_pose")
+        bb = py_trees.blackboard.Blackboard()
+        if bb.get("homing_done") is True:
+            rospy.logdebug(f"[{self.name}] Homing already done (blackboard latch) -> SUCCESS")
+            return py_trees.common.Status.SUCCESS
+
+        ee_pose = bb.get("ee_pose")
         if ee_pose is None:
             rospy.loginfo("Check: At Home Pose? -> NO (no ee_pose on blackboard)")
             return py_trees.common.Status.FAILURE
@@ -401,16 +469,19 @@ class GoToHome(py_trees.behaviour.Behaviour):
         pass
 
     def _done_cb(self, state, result):
-        # state es un entero (GoalStatus); 3 == SUCCEEDED
+        bb = py_trees.blackboard.Blackboard()
         try:
             if state == GoalStatus.SUCCEEDED:
                 self._succeeded = True
+                bb.set("homing_done", True)
                 rospy.loginfo(f"[{self.name}] Acción completada: SUCCEEDED")
             else:
                 self._succeeded = False
+                bb.set("homing_done", False)
                 rospy.logwarn(f"[{self.name}] Acción terminada con estado {state}")
         except Exception:
             self._succeeded = False
+            bb.set("homing_done", False)
         finally:
             self.done = True
 
@@ -438,19 +509,133 @@ class GoToHome(py_trees.behaviour.Behaviour):
 
 class IsWristDataAvailable(py_trees.behaviour.Behaviour):
     """(Condición) Muñeca y vector normal disponibles"""
+    # TODO: Filtrar datos antiguos y comprobar que es estable
     def __init__(self, name="IsWristDataAvailable"):
         super(IsWristDataAvailable, self).__init__(name)
         self.blackboard = py_trees.blackboard.Blackboard()
     
     def update(self):
+        if self.blackboard.get("approach_done") is True:
+            return py_trees.common.Status.SUCCESS
+        
         rospy.loginfo("Check: Wrist Data Available?")
         rwrist = self.blackboard.get("rwrist_kp")
         normal = self.blackboard.get("wrist_normal")
+        kp_timestamp = self.blackboard.get("skeleton_timestamp")
+
+        time_now = rospy.Time.now()
+        time_delay = (time_now - kp_timestamp).to_sec() if kp_timestamp is not None else None
+
+        rospy.loginfo(f"Time delay since last wrist data: {time_delay} seconds")
+        # Filtrar datos antiguos (más de 1 segundo)
+        if kp_timestamp is None or (time_now - kp_timestamp).to_sec() > 1.0:
+            return py_trees.common.Status.FAILURE
         
         if rwrist is None or normal is None:
             return py_trees.common.Status.FAILURE
         else:
             return py_trees.common.Status.SUCCESS
+
+class IsWristStable(py_trees.behaviour.Behaviour):
+    """(Condición) Muñeca estable durante un intervalo de tiempo.
+
+    Comprueba estabilidad usando las últimas lecturas de `rwrist_kp` (posición)
+    y `wrist_normal` (vector normal). Usa una ventana temporal `window_sec`.
+    """
+    def __init__(self, name="IsWristStable", window_sec=2.0, pos_tol=0.02, ori_tol_deg=5.0, min_samples=5):
+        super(IsWristStable, self).__init__(name)
+        self.blackboard = py_trees.blackboard.Blackboard()
+        self.window_sec = float(window_sec)
+        self.pos_tol = float(pos_tol)
+        self.ori_tol_deg = float(ori_tol_deg)
+        self.min_samples = int(min_samples)
+        # buffer: deque of tuples (rospy.Time, np_pos(3,), np_normal(3,))
+        self.buffer = deque()
+
+    def initialise(self):
+        # No vaciamos el buffer: queremos conservar historial entre inicializaciones opcionales,
+        # pero en caso de querer resetarlo por cada entry, descomenta la siguiente línea.
+        # self.buffer.clear()
+        rospy.logdebug(f"[{self.name}] Initialise (window={self.window_sec}s, pos_tol={self.pos_tol}m, ori_tol={self.ori_tol_deg}deg)")
+
+    def _prune_buffer(self, now):
+        """Eliminar entradas más antiguas que now - window_sec."""
+        cutoff = now - rospy.Duration(self.window_sec)
+        while self.buffer and self.buffer[0][0] < cutoff:
+            self.buffer.popleft()
+
+    def _vec_from_kp(self, kp):
+        try:
+            return np.array([kp.x, kp.y, kp.z], dtype=float)
+        except Exception:
+            return None
+
+    def _normal_from_bb(self, normal_bb):
+        try:
+            arr = np.array(normal_bb, dtype=float)
+            norm = np.linalg.norm(arr)
+            if norm <= 1e-8:
+                return None
+            return arr / norm
+        except Exception:
+            return None
+
+    def update(self):
+        if self.blackboard.get("approach_done") is True:
+            return py_trees.common.Status.SUCCESS
+        # Leer del blackboard
+        rwrist = self.blackboard.get("rwrist_kp")
+        wrist_normal = self.blackboard.get("wrist_normal")
+        kp_timestamp = self.blackboard.get("skeleton_timestamp")  # asumimos que lo publicas
+
+        if rwrist is None or wrist_normal is None or kp_timestamp is None:
+            rospy.logdebug(f"[{self.name}] Datos insuficientes en blackboard (rwrist/wrist_normal/timestamp).")
+            return py_trees.common.Status.RUNNING
+
+        # convertir
+        pos = self._vec_from_kp(rwrist)
+        normal = self._normal_from_bb(wrist_normal)
+
+        if pos is None or normal is None:
+            rospy.logwarn_throttle(5, f"[{self.name}] Lectura inválida (pos o normal nula).")
+            return py_trees.common.Status.RUNNING
+
+        now = rospy.Time.now()
+        # Guardar entrada (usamos kp_timestamp si quieres usar la marca de la cámara; aquí guardamos ahora)
+        self.buffer.append((now, pos, normal))
+        self._prune_buffer(now)
+
+        if len(self.buffer) < self.min_samples:
+            rospy.logdebug(f"[{self.name}] Muestras insuficientes ({len(self.buffer)}/{self.min_samples}).")
+            return py_trees.common.Status.RUNNING
+
+        # Calcular medida de posición: usar posición media o referencia inicial
+        positions = np.vstack([entry[1] for entry in self.buffer])
+        mean_pos = np.mean(positions, axis=0)
+        max_disp = np.max(np.linalg.norm(positions - mean_pos, axis=1))
+
+        # Calcular medida de orientación: máximo ángulo entre normales y la media
+        normals = np.vstack([entry[2] for entry in self.buffer])
+        # compute pairwise max angle relative to mean normal
+        mean_normal = np.mean(normals, axis=0)
+        mn_norm = np.linalg.norm(mean_normal)
+        if mn_norm <= 1e-8:
+            rospy.logwarn_throttle(5, f"[{self.name}] Mean normal casi cero, considerándolo inestable.")
+            return py_trees.common.Status.RUNNING
+        mean_normal = mean_normal / mn_norm
+        # angles in degrees between each normal and mean_normal
+        dots = np.clip(np.dot(normals, mean_normal), -1.0, 1.0)
+        angles = np.degrees(np.arccos(dots))
+        max_angle = float(np.max(angles))
+
+        rospy.logdebug(f"[{self.name}] max_disp={max_disp:.4f} m, max_angle={max_angle:.2f} deg, samples={len(self.buffer)}")
+
+        if max_disp <= self.pos_tol and max_angle <= self.ori_tol_deg:
+            rospy.loginfo(f"[{self.name}] Wrist STABLE: disp={max_disp:.4f}m ang={max_angle:.2f}deg")
+            return py_trees.common.Status.SUCCESS
+        else:
+            rospy.logdebug(f"[{self.name}] Wrist not stable yet: disp={max_disp:.4f}m ang={max_angle:.2f}deg")
+            return py_trees.common.Status.RUNNING
 
 class IsTrajectoryFree(py_trees.behaviour.Behaviour):
     """(Condición) Trayectoria libre"""
@@ -463,8 +648,8 @@ class IsTrajectoryFree(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.SUCCESS
 
 class PlanAndApproach(py_trees.behaviour.Behaviour):
-    """(Acción) Plan y aprox — calcula approach = kp_wrist + normal*0.15 y envía ese pose como goal (IMPEDANCE_MOVE)."""
-    def __init__(self, name="PlanAndApproach"):
+    """(Acción) Plan y aprox — calcula approach = kp_wrist + normal*approach_distance y envía ese pose como goal (IMPEDANCE_MOVE)."""
+    def __init__(self, name="PlanAndApproach", approach_distance=0.15, forearm_correction=-0.1, max_velocity=0.1, task_type=0):
         super(PlanAndApproach, self).__init__(name)
         self.done = False
         self._client = None
@@ -472,6 +657,10 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
         self._succeeded = False
         self._server_available = False
         self.blackboard = py_trees.blackboard.Blackboard()
+        self.approach_distance = approach_distance
+        self.forearm_correction = forearm_correction
+        self.max_velocity = max_velocity
+        self.task_type = 0
 
     def setup(self, timeout):
         # preparar cliente de acción (espera corta)
@@ -492,6 +681,9 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
     def initialise(self):
         # IMPORTANT: do not force-reset _goal_sent here; that was causing re-sends
         # sólo inicializamos la ejecución si no hay un goal activo
+        if self.blackboard.get("approach_done") is True:
+            return py_trees.common.Status.SUCCESS
+
         if self._goal_sent and not self.done:
             rospy.logdebug(f"[{self.name}] initialise called but goal already sent and not done; skipping re-send")
             return
@@ -547,11 +739,16 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
             rospy.logerr(f"[{self.name}] Error preparando vectores: {e}")
             return
 
-        # calcular pose de aproximación (kp_wrist + normal * 0.15) con corrección de antebrazo (-0.1)
+        # calcular pose de aproximación (kp_wrist + normal * approach_distance) con corrección de antebrazo
         try:
             approach_point = calculate_gripper_position_forearm_correction(
-                rw, normal_arr, forearm, 0.15, -0.1
+                rw, normal_arr, forearm, self.approach_distance, self.forearm_correction
             )
+            self.blackboard.set("approach_wrist_position", rw)
+            self.blackboard.set("approach_normal_vector", normal_arr)
+            self.blackboard.set("approach_forearm_vector", forearm)
+
+
         except Exception as e:
             rospy.logerr(f"[{self.name}] Error calculando posición de approach: {e}")
             return
@@ -571,7 +768,7 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
 
         # Construir y enviar goal con la pose calculada (IMPEDANCE_MOVE)
         goal = MoveFR3Goal()
-        goal.task_type = 1  # TASK_IMPEDANCE_MOVE (usar 1 según action spec)
+        goal.task_type = self.task_type # TASK_IMPEDANCE_MOVE (usar 1 según action spec)
         goal.target_pose.header.stamp = rospy.Time.now()
         goal.target_pose.header.frame_id = "fr3_link0"
         goal.target_pose.pose.position.x = approach_point.x
@@ -581,7 +778,7 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
         goal.target_pose.pose.orientation.y = qy
         goal.target_pose.pose.orientation.z = qz
         goal.target_pose.pose.orientation.w = qw
-        goal.max_velocity = 0.1
+        goal.max_velocity = self.max_velocity
 
         try:
             self._client.send_goal(goal, done_cb=self._done_cb, feedback_cb=self._feedback_cb)
@@ -601,6 +798,175 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
         try:
             if state == GoalStatus.SUCCEEDED:
                 self._succeeded = True
+                self.blackboard.set("approach_done", True)
+                rospy.logwarn(f"[{self.name}] RRR Acción completada: SUCCEEDED")
+            else:
+                self._succeeded = False
+                rospy.logwarn(f"[{self.name}] Acción terminada con estado {state}")
+        except Exception:
+            self._succeeded = False
+        finally:
+            # marcar como finalizado y permitir reenvío futuro
+            self.done = True
+            self._goal_sent = False
+
+    def update(self):
+        if not self._server_available:
+            rospy.logwarn(f"[{self.name}] server not available in update()")
+            return py_trees.common.Status.FAILURE
+
+        # Si hay un goal en el cliente y sigue activo/pending, devolver RUNNING
+        try:
+            if self._client is not None:
+                state = self._client.get_state()
+                if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                    rospy.logdebug(f"[{self.name}] Action state {state} -> RUNNING")
+                    return py_trees.common.Status.RUNNING
+                # Mapear estados terminales si el callback no se ha disparado aún
+                if state == GoalStatus.SUCCEEDED:
+                    self._succeeded = True
+                    self.done = True
+                elif state in (GoalStatus.ABORTED, GoalStatus.PREEMPTED, GoalStatus.REJECTED,
+                               GoalStatus.RECALLED, GoalStatus.LOST):
+                    self._succeeded = False
+                    self.done = True
+        except Exception as e:
+            rospy.logwarn(f"[{self.name}] No se pudo consultar estado del action client: {e}")
+
+        # Si enviamos un goal y aún no terminó, seguir RUNNING
+        if self._goal_sent and not self.done:
+            rospy.logdebug(f"[{self.name}] goal_sent and not done -> RUNNING")
+            return py_trees.common.Status.RUNNING
+
+        # Si terminó, devolver SUCCESS/FAILURE según el resultado
+        if self.done:
+            rospy.logdebug(f"[{self.name}] done -> returning final status ({self._succeeded})")
+            final = py_trees.common.Status.SUCCESS if self._succeeded else py_trees.common.Status.FAILURE
+            self._goal_sent = False
+            # --- NUEVO: marcar en el blackboard ---
+            if final == py_trees.common.Status.SUCCESS:
+                self.blackboard.set("approach_done", True)
+            return final
+
+        rospy.logdebug(f"[{self.name}] default RUNNING")
+        return py_trees.common.Status.RUNNING
+
+# Subclase para contacto
+class PlanAndContact(py_trees.behaviour.Behaviour):
+    """Plan y contacto:  pero con approach_distance=0.0 y permite especificar wrist/normal/forearm."""
+    def __init__(self, name="PlanAndContact"):
+        super(PlanAndContact, self).__init__(name=name)
+        self.blackboard = py_trees.blackboard.Blackboard()
+        self.approach_wrist = None
+        self.approach_normal = None
+        self.approach_forearm = None
+        self.task_type = 0
+        self.approach_distance = 0.0
+        self.forearm_correction = -0.1
+        self.max_velocity = 0.1
+        self.done = False
+
+    def setup(self, timeout):
+        # preparar cliente de acción (espera corta)
+        self._client = actionlib.SimpleActionClient('fr3_motion_server', MoveFR3Action)
+        try:
+            ok = self._client.wait_for_server(rospy.Duration(2.0))
+            if ok:
+                self._server_available = True
+                rospy.loginfo(f"[{self.name}] Conectado a fr3_motion_server.")
+            else:
+                self._server_available = False
+                rospy.logwarn(f"[{self.name}] No se encontró fr3_motion_server (timeout).")
+        except Exception as e:
+            self._server_available = False
+            rospy.logwarn(f"[{self.name}] Excepción esperando al servidor: {e}")
+        return True
+
+    def initialise(self):
+        # IMPORTANT: do not force-reset _goal_sent here; that was causing re-sends
+        # sólo inicializamos la ejecución si no hay un goal activo
+        if self.blackboard.get("contact_done") is True:
+            return py_trees.common.Status.SUCCESS
+        
+        if self.approach_wrist is None or self.approach_normal is None or self.approach_forearm is None:
+            self.approach_wrist = self.blackboard.get("approach_wrist_position")
+            self.approach_normal = self.blackboard.get("approach_normal_vector")
+            self.approach_forearm = self.blackboard.get("approach_forearm_vector")
+
+        self.done = False
+        self._succeeded = False
+
+        if not self._server_available:
+            rospy.logerr(f"[{self.name}] Servidor de acción no disponible.")
+            return
+
+        # Si el cliente ya tiene un goal PENDING/ACTIVE, no reenviamos
+        try:
+            state = self._client.get_state()
+            if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                rospy.loginfo(f"[{self.name}] Action client already has active goal (state={state}), not resending.")
+                self._goal_sent = True
+                return
+        except Exception:
+            # si no podemos consultar, intentamos de todos modos (log)
+            rospy.logdebug(f"[{self.name}] No se pudo consultar estado del action client antes de enviar.")
+
+        # calcular pose de aproximación (kp_wrist + normal * approach_distance) con corrección de antebrazo
+        try:
+            contact_point = calculate_gripper_position_forearm_correction(
+                self.approach_wrist, self.approach_normal, self.approach_forearm, 0.0, -0.10
+            )
+
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] Error calculando posición de contacto: {e}")
+            return
+
+        # calcular orientación (igual que hri_states_machine)
+        try:
+            quat_pose = calculate_quaternion_0_F(-self.approach_forearm, -self.approach_normal)
+            qx = quat_pose.x
+            qy = quat_pose.y
+            qz = quat_pose.z
+            qw = quat_pose.w
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] Error calculando orientación: {e}")
+            return
+
+        rospy.loginfo(f"[{self.name}] Approach pose: x={contact_point.x:.3f}, y={contact_point.y:.3f}, z={contact_point.z:.3f}")
+
+        # Construir y enviar goal con la pose calculada (IMPEDANCE_MOVE)
+        goal = MoveFR3Goal()
+        goal.task_type = self.task_type  # TASK_IMPEDANCE_MOVE (usar 1 según action spec)
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.header.frame_id = "fr3_link0"
+        goal.target_pose.pose.position.x = contact_point.x
+        goal.target_pose.pose.position.y = contact_point.y
+        goal.target_pose.pose.position.z = contact_point.z
+        goal.target_pose.pose.orientation.x = qx
+        goal.target_pose.pose.orientation.y = qy
+        goal.target_pose.pose.orientation.z = qz
+        goal.target_pose.pose.orientation.w = qw
+        goal.max_velocity = self.max_velocity
+
+        try:
+            self._client.send_goal(goal, done_cb=self._done_cb, feedback_cb=self._feedback_cb)
+            self._goal_sent = True
+            rospy.loginfo(f"[{self.name}] Goal (approach pose) enviado a fr3_motion_server.")
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] Error enviando goal: {e}")
+            self._goal_sent = False
+            self._succeeded = False
+            self.done = True
+    
+    def _feedback_cb(self, feedback):
+        # opcional: guardar feedback en blackboard
+        pass
+
+    def _done_cb(self, state, result):
+        try:
+            if state == GoalStatus.SUCCEEDED:
+                self._succeeded = True
+                self.blackboard.set("contact_done", True)
                 rospy.loginfo(f"[{self.name}] Acción completada: SUCCEEDED")
             else:
                 self._succeeded = False
@@ -650,87 +1016,6 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
 
         # Caso por defecto: RUNNING (evita reentradas que provoquen initialise/reenvío)
         rospy.logdebug(f"[{self.name}] default RUNNING")
-        return py_trees.common.Status.RUNNING
-
-class IsWristStable(py_trees.behaviour.Behaviour):
-    """(Condición) Muñeca aproxima (estable)"""
-    def __init__(self, name="IsWristStable"):
-        super(IsWristStable, self).__init__(name)
-    
-    def update(self):
-        rospy.loginfo("Check: Wrist Stable?")
-        # TODO: Comprobar que la pose de la muñeca no ha cambiado
-        return py_trees.common.Status.SUCCESS
-
-class PlanAndContact(py_trees.behaviour.Behaviour):
-    """(Acción) Plan y contacto"""
-    def __init__(self, name="PlanAndContact"):
-        super(PlanAndContact, self).__init__(name)
-        self.done = False
-
-    def initialise(self):
-        self.done = False
-        rospy.loginfo("Action: Planning and Executing Contact...")
-        # TODO: Usar controlador de impedancia o movimiento de contacto
-
-    def update(self):
-        if not self.done:
-            self.done = True
-            rospy.loginfo("Action: Contact Made!")
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.RUNNING
-
-class CloseGripper(py_trees.behaviour.Behaviour):
-    """(Acción) Cerrar garra"""
-    def __init__(self, name="CloseGripper"):
-        super(CloseGripper, self).__init__(name)
-        self.done = False
-
-    def initialise(self):
-        self.done = False
-        rospy.loginfo("Action: Closing Gripper...")
-        # TODO: Enviar comando de agarre (franka_gripper/grasp)
-        # Importante: resetear la condición 'IsGripperOpen' para el cleanup
-        setattr(IsGripperOpen, "been_opened", False)
-
-    def update(self):
-        if not self.done:
-            self.done = True
-            rospy.loginfo("Action: Gripper Closed!")
-            return py_trees.common.Status.SUCCESS
-        return py_trees.common.Status.RUNNING
-
-class IsGraspGood(py_trees.behaviour.Behaviour):
-    """(Condición) garra cerrada en antebrazo?"""
-    def __init__(self, name="IsGraspGood"):
-        super(IsGraspGood, self).__init__(name)
-    
-    def update(self):
-        rospy.loginfo("Check: Good Grasp?")
-        # TODO: Comprobar el ancho de la garra (franka_gripper/state)
-        # --- ¡Descomenta esto para probar el fallo! ---
-        # rospy.logerr("Check: Grasp FAILED!")
-        # return py_trees.common.Status.FAILURE
-        # ---
-        rospy.loginfo("Check: Grasp OK!")
-        return py_trees.common.Status.SUCCESS
-
-class RunNeuralNet(py_trees.behaviour.Behaviour):
-    """(Acción) Red neuronal"""
-    def __init__(self, name="RunNeuralNet"):
-        super(RunNeuralNet, self).__init__(name)
-        self.done = False
-
-    def initialise(self):
-        self.done = False
-        rospy.loginfo("Action: Running Neural Net...")
-        # TODO: Llamar al servicio de la NN
-
-    def update(self):
-        if not self.done:
-            self.done = True
-            rospy.loginfo("Action: Neural Net Finished!")
-            return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
 # --- Hojas de Clean Up ---
@@ -796,7 +1081,7 @@ def create_pre_checks_subtree():
         children=[
             ensure_gripper_open,
             RobotModeOk(),
-            # ensure_home_pose # TODO: Revisar porq no se puede mover durante el movimiento porq se pelea con esta condicion
+            ensure_home_pose # TODO: Revisar porq no se puede mover durante el movimiento porq se pelea con esta condicion
         ]
     )
     return pre_checks_root
@@ -809,7 +1094,8 @@ def create_main_task_subtree():
         name="Aproximación",
         memory=True,
         children=[
-            IsTrajectoryFree(),
+            IsWristDataAvailable(),
+            IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10),
             PlanAndApproach()
         ]
     )
@@ -819,7 +1105,6 @@ def create_main_task_subtree():
         name="Contacto",
         memory=True,
         children=[
-            IsWristStable(),
             PlanAndContact()
         ]
     )
@@ -830,8 +1115,8 @@ def create_main_task_subtree():
         memory=True,
         children=[
             CloseGripper(),
-            IsGraspGood(),
-            RunNeuralNet()
+            # IsGraspGood(),
+            # RunNeuralNet()
         ]
     )
 
@@ -840,7 +1125,6 @@ def create_main_task_subtree():
         name="Tarea principal",
         memory=True,
         children=[
-            IsWristDataAvailable(),
             approach_seq,
             contact_seq,
             grasp_seq
@@ -946,7 +1230,8 @@ def create_root():
             SubscribeRobotMode(),
             SubscribeSkeleton3D(),
             SubscribeGraspState(),
-            SubscribeEEPose()
+            SubscribeEEPose(),
+            SubscribeFrankaButtons()
         ]
     )
 
@@ -959,7 +1244,6 @@ def create_root():
             root
         ]
     )
-
 
 
 
@@ -977,6 +1261,11 @@ Recuerda la ubicación actual es Málaga, Andalusia, Spain.
     """
     rospy.init_node("fr3_grasp_behaviour_tree")
     rospy.loginfo("Nodo de Árbol de Comportamiento iniciado.")
+    
+    py_bb = py_trees.blackboard.Blackboard()
+    py_bb.set("homing_done", False) # Variable global para homing
+    py_bb.set("approach_done", False)
+
     root = create_root()
     
     # Aquí usamos la clase de py_trees_ros

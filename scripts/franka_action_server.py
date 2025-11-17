@@ -11,6 +11,7 @@ import scipy.interpolate
 import actionlib
 from franka_concerto.msg import MoveFR3Action, MoveFR3Goal, MoveFR3Result, MoveFR3Feedback
 from actionlib_msgs.msg import GoalStatusArray
+from franka_msgs.msg import FrankaState
 
 # --- Imports de Mensajes ROS ---
 from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
@@ -56,10 +57,10 @@ class Fr3ActionServer:
             TwistStamped, 
             queue_size=10
         )
-
+        self.v_commanded = np.zeros(6)
         # --- Subscriptores ---
         rospy.Subscriber('/franka_state_controller/ee_pose', PoseStamped, self.obtain_current_pose_callback, queue_size=10)
-
+        rospy.Subscriber('/franka_state_controller/franka_states', FrankaState, self.franka_state_callback, queue_size=10)
         # --- Cliente de Servicio para Cambiar Controladores ---
         rospy.loginfo("Esperando al servicio del Controller Manager...")
         try:
@@ -102,6 +103,22 @@ class Fr3ActionServer:
             queue_size=1
         )
 
+    def franka_state_callback(self, msg):
+        """Actualiza self.current_velocity con FrankaState.O_dP_EE_c (EE twist comandado en base)."""
+        try:
+            v_commanded = msg.O_dP_EE_c
+
+            if v_commanded is None:
+                # Si la definición del mensaje difiere, lo reportamos para debugging
+                rospy.logwarn("FrankaState no contiene O_dP_EE_c")
+                return
+            # Asegurarse de convertir a numpy array de longitud 6
+            self.v_commanded = np.array(v_commanded, dtype=float)
+            
+
+        except Exception as e:
+            rospy.logwarn(f"Error leyendo FrankaState.O_dP_EE_c: {e}")
+
     def obtain_current_pose_callback(self, msg):
         """ Callback que obtiene la pose actual del robot """
         self.current_pose = msg
@@ -113,6 +130,40 @@ class Fr3ActionServer:
         # Guarda el último status recibido (puedes filtrar por goal_id si lo necesitas)
         if msg.status_list:
             self.effort_status = msg.status_list[-1].status  # Último status recibido
+    
+    def _ramp_down_velocity(self, rate_hz=100.0, alpha=0.9, timeout=3.0, tol=1e-3):
+        """
+        Hace una deceleración suave desde la velocidad comandada actual (self.v_commanded)
+        hasta ~0, publicando TwistStamped en /robot_vel_ctrl/vel_cmd.
+
+        - alpha en (0,1): más pequeño = frena más rápido.
+        - timeout: tiempo máximo en segundos.
+        """
+        rate = rospy.Rate(rate_hz)
+        start_t = rospy.Time.now()
+
+        while (rospy.Time.now() - start_t).to_sec() < timeout and not rospy.is_shutdown():
+            current_vel = np.array(self.v_commanded, dtype=float)
+
+            # Si ya estamos prácticamente parados, salir
+            if np.allclose(current_vel, np.zeros(6), atol=tol):
+                break
+
+            # Paso de deceleración exponencial
+            current_vel *= alpha
+
+            ts = TwistStamped()
+            ts.header.stamp = rospy.Time.now()
+            ts.twist.linear.x  = float(current_vel[0])
+            ts.twist.linear.y  = float(current_vel[1])
+            ts.twist.linear.z  = float(current_vel[2])
+            ts.twist.angular.x = float(current_vel[3])
+            ts.twist.angular.y = float(current_vel[4])
+            ts.twist.angular.z = float(current_vel[5])
+
+            self.velocity_cmd_pub.publish(ts)
+            rate.sleep()
+
 
     def _ensure_controller_loaded(self, controller_name):
         """
@@ -244,6 +295,9 @@ class Fr3ActionServer:
                 self._result.message = "La tarea falló o fue abortada."
                 rospy.logerr(self._result.message)
                 self._as.set_aborted(self._result)
+            elif self._as.is_preempt_requested():
+                rospy.loginfo("La tarea fue preempted (cancelada).")
+
 
     def _handle_homing(self, goal):
         """
@@ -257,9 +311,6 @@ class Fr3ActionServer:
         
         rate = rospy.Rate(100) # 100 Hz
         twist_msg = Twist()
-        velocidad_nula = TwistStamped()
-        velocidad_nula.header.stamp = rospy.Time.now()
-        velocidad_nula.twist = Twist()  # Twist vacío (todo ceros)
 
         # Pose objetivo del goal
         target_pos = np.array([
@@ -281,12 +332,27 @@ class Fr3ActionServer:
 
         try:
             while not rospy.is_shutdown():
+                
+                # --- CANCELACIÓN DESDE EL BT (preempt) ---
                 if self._as.is_preempt_requested():
-                    rospy.loginfo("¡Acción de Homing cancelada (preempted)!")
-                    self._as.set_preempted()
-                    self.velocity_cmd_pub.publish(velocidad_nula)
-                    return False
+                    rospy.loginfo("¡Acción de vel cancelada (preempted)! Iniciando rampa a cero.")
+                    # self._as.set_preempted()
 
+                    # Publicar inmediatamente comando de parada y luego intentar una deceleración suave
+                    rospy.loginfo("La tarea fue preempted (cancelada). Publicando parada segura.")
+
+                if self._as.is_preempt_requested():
+                    rospy.loginfo("¡Acción de Homing cancelada (preempted)! Iniciando rampa a cero.")
+                    try:
+                        self._ramp_down_velocity(rate_hz=100.0, alpha=0.9, timeout=3.0, tol=1e-3)
+                    except Exception as e:
+                        rospy.logwarn(f"Error durante deceleración tras preempt: {e}")
+
+                    rospy.loginfo("Robot detenido tras preempt.")
+                    self._as.set_preempted()
+                    return False
+                
+                # --- Cálculo normal del comando de velocidad ---
                 current_pos = np.array([
                     self.current_pose.pose.position.x,
                     self.current_pose.pose.position.y,
@@ -331,8 +397,13 @@ class Fr3ActionServer:
                 self._as.publish_feedback(self._feedback)
                 
                 if distance < self.HOMING_POS_THRESHOLD and angle < 0.01:
-                    rospy.loginfo("Homing completado.")
-                    self.velocity_cmd_pub.publish(velocidad_nula)
+                    rospy.loginfo("Homing completado. Iniciando rampa final a cero.")
+
+                    try:
+                        self._ramp_down_velocity(rate_hz=100.0, alpha=0.6, timeout=10.0, tol=1e-3)
+                    except Exception as e:
+                        rospy.logwarn(f"Error durante deceleración final de homing: {e}")
+
                     break
 
                 # Limita el error máximo para evitar saltos
@@ -368,10 +439,10 @@ class Fr3ActionServer:
 
         except Exception as e:
             rospy.logerr(f"Error durante el Homing: {e}")
-        finally:
-            rospy.loginfo("Homing: Enviando comando de velocidad cero (shutdown/finalización).")
-            self.velocity_cmd_pub.publish(velocidad_nula)
+            return False
 
+        # Ojo: aquí ya hemos frenado suavemente, no mandes un cero de golpe
+        rospy.loginfo("Homing finalizado con parada suave.")
         return True
 
     def _handle_impedance_move(self, goal):
