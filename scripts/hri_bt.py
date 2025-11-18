@@ -161,7 +161,6 @@ class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
             py_trees.blackboard.Blackboard().set("rwrist_kp", self.rwrist)
             py_trees.blackboard.Blackboard().set("wrist_normal", self.normal)
             py_trees.blackboard.Blackboard().set("skeleton_timestamp", self.kp_timestamp)
-            rospy.loginfo("Skeleton3D keypoints and normal set on blackboard.")
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
     
@@ -184,7 +183,6 @@ class SubscribeGraspState(py_trees.behaviour.Behaviour):
     def update(self):
         if self.state is not None:
             py_trees.blackboard.Blackboard().set("gripper_closed", self.state)
-            rospy.loginfo(f"Grasp state set on blackboard: {self.state}")
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
@@ -209,7 +207,6 @@ class SubscribeEEPose(py_trees.behaviour.Behaviour):
     def update(self):
         if self.msg is not None:
             py_trees.blackboard.Blackboard().set("ee_pose", self.msg)
-            rospy.loginfo("EE pose set on blackboard.")
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
@@ -233,7 +230,7 @@ class SubscribeFrankaButtons(py_trees.behaviour.Behaviour):
         self.cross = msg.cross
 
         if self.cross == True:
-            rospy.loginfo("Franka Button CROSS pressed. Reset homing_done latch.")
+            rospy.logwarn("Franka Button CROSS pressed. Reset homing_done latch.")
             self.blackboard.set("homing_done", False)
             self.blackboard.set("approach_done", False)
             self.blackboard.set("contact_done", False)
@@ -253,7 +250,6 @@ class RobotModeOk(py_trees.behaviour.Behaviour):
         self.mode_required_list = [1, 2, 3, 4]  # Modo de ejecución [luz verde = 1]
     
     def update(self):
-        rospy.loginfo("Check: Robot Mode OK?")
         self.robot_mode = self.blackboard.get("robot_mode")
 
         if self.robot_mode in self.mode_required_list:
@@ -270,7 +266,6 @@ class IsGripperOpen(py_trees.behaviour.Behaviour):
         self.blackboard = py_trees.blackboard.Blackboard()
     
     def update(self):
-        rospy.loginfo("Check: Gripper Open?")
         # TODO: Comprobar el estado de la garra
         # Simulación: Falla la primera vez para forzar la acción
         
@@ -363,10 +358,9 @@ class IsAtHomePose(py_trees.behaviour.Behaviour):
         return abs((angle + math.pi) % (2*math.pi) - math.pi)
 
     def update(self):
-        rospy.logdebug("Check: At Home Pose? (tolerant)")
         bb = py_trees.blackboard.Blackboard()
         if bb.get("homing_done") is True:
-            rospy.logdebug(f"[{self.name}] Homing already done (blackboard latch) -> SUCCESS")
+            rospy.loginfo(f"[{self.name}] Initial homing already done -> SUCCESS")
             return py_trees.common.Status.SUCCESS
 
         ee_pose = bb.get("ee_pose")
@@ -393,7 +387,7 @@ class IsAtHomePose(py_trees.behaviour.Behaviour):
         q_ref = (self.homing_pose.pose.orientation.x, self.homing_pose.pose.orientation.y, self.homing_pose.pose.orientation.z, self.homing_pose.pose.orientation.w)
         ori_err = self._quat_angle_diff(q_ref, q_ee)
 
-        rospy.loginfo(f"AtHome check: pos_err={pos_err:.4f} m, ori_err={math.degrees(ori_err):.2f} deg (tol pos={self.pos_tol} m, tol ori={math.degrees(self.ori_tol_rad):.2f} deg)")
+        # rospy.loginfo(f"AtHome check: pos_err={pos_err:.4f} m, ori_err={math.degrees(ori_err):.2f} deg (tol pos={self.pos_tol} m, tol ori={math.degrees(self.ori_tol_rad):.2f} deg)")
 
         if pos_err <= self.pos_tol and ori_err <= self.ori_tol_rad:
             rospy.loginfo("Check: At Home Pose? -> YES")
@@ -515,6 +509,7 @@ class IsWristDataAvailable(py_trees.behaviour.Behaviour):
         self.blackboard = py_trees.blackboard.Blackboard()
     
     def update(self):
+        # DEBUG_memory: No necesario si usamos memory=True en el Sequence padre
         if self.blackboard.get("approach_done") is True:
             return py_trees.common.Status.SUCCESS
         
@@ -556,6 +551,7 @@ class IsWristStable(py_trees.behaviour.Behaviour):
         # No vaciamos el buffer: queremos conservar historial entre inicializaciones opcionales,
         # pero en caso de querer resetarlo por cada entry, descomenta la siguiente línea.
         # self.buffer.clear()
+
         rospy.logdebug(f"[{self.name}] Initialise (window={self.window_sec}s, pos_tol={self.pos_tol}m, ori_tol={self.ori_tol_deg}deg)")
 
     def _prune_buffer(self, now):
@@ -581,8 +577,10 @@ class IsWristStable(py_trees.behaviour.Behaviour):
             return None
 
     def update(self):
-        if self.blackboard.get("approach_done") is True:
-            return py_trees.common.Status.SUCCESS
+        # DEBUG_memory: No necesario si usamos memory=True en el Sequence padre
+        # if self.blackboard.get("approach_done") is True:
+        #     return py_trees.common.Status.SUCCESS
+        
         # Leer del blackboard
         rwrist = self.blackboard.get("rwrist_kp")
         wrist_normal = self.blackboard.get("wrist_normal")
@@ -628,24 +626,14 @@ class IsWristStable(py_trees.behaviour.Behaviour):
         angles = np.degrees(np.arccos(dots))
         max_angle = float(np.max(angles))
 
-        rospy.logdebug(f"[{self.name}] max_disp={max_disp:.4f} m, max_angle={max_angle:.2f} deg, samples={len(self.buffer)}")
+        # rospy.logdebug(f"[{self.name}] max_disp={max_disp:.4f} m, max_angle={max_angle:.2f} deg, samples={len(self.buffer)}")
 
         if max_disp <= self.pos_tol and max_angle <= self.ori_tol_deg:
-            rospy.loginfo(f"[{self.name}] Wrist STABLE: disp={max_disp:.4f}m ang={max_angle:.2f}deg")
+            rospy.loginfo(f"[{self.name}] Wrist STABLE")
             return py_trees.common.Status.SUCCESS
         else:
-            rospy.logdebug(f"[{self.name}] Wrist not stable yet: disp={max_disp:.4f}m ang={max_angle:.2f}deg")
+            rospy.logdebug(f"[{self.name}] Wrist not stable yet")
             return py_trees.common.Status.RUNNING
-
-class IsTrajectoryFree(py_trees.behaviour.Behaviour):
-    """(Condición) Trayectoria libre"""
-    def __init__(self, name="IsTrajectoryFree"):
-        super(IsTrajectoryFree, self).__init__(name)
-    
-    def update(self):
-        rospy.loginfo("Check: Trajectory Free?")
-        # TODO: Usar MoveIt para comprobar la validez de la escena
-        return py_trees.common.Status.SUCCESS
 
 class PlanAndApproach(py_trees.behaviour.Behaviour):
     """(Acción) Plan y aprox — calcula approach = kp_wrist + normal*approach_distance y envía ese pose como goal (IMPEDANCE_MOVE)."""
@@ -679,10 +667,10 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
         return True
 
     def initialise(self):
-        # IMPORTANT: do not force-reset _goal_sent here; that was causing re-sends
-        # sólo inicializamos la ejecución si no hay un goal activo
-        if self.blackboard.get("approach_done") is True:
-            return py_trees.common.Status.SUCCESS
+
+        # DEBUG_memory: No necesario si usamos memory=True en el Sequence padre
+        # if self.blackboard.get("approach_done") is True:
+        #     return py_trees.common.Status.SUCCESS
 
         if self._goal_sent and not self.done:
             rospy.logdebug(f"[{self.name}] initialise called but goal already sent and not done; skipping re-send")
@@ -800,6 +788,7 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
                 self._succeeded = True
                 self.blackboard.set("approach_done", True)
                 rospy.logwarn(f"[{self.name}] RRR Acción completada: SUCCEEDED")
+
             else:
                 self._succeeded = False
                 rospy.logwarn(f"[{self.name}] Acción terminada con estado {state}")
@@ -811,47 +800,53 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
             self._goal_sent = False
 
     def update(self):
-        if not self._server_available:
-            rospy.logwarn(f"[{self.name}] server not available in update()")
-            return py_trees.common.Status.FAILURE
 
-        # Si hay un goal en el cliente y sigue activo/pending, devolver RUNNING
-        try:
-            if self._client is not None:
-                state = self._client.get_state()
-                if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
-                    rospy.logdebug(f"[{self.name}] Action state {state} -> RUNNING")
-                    return py_trees.common.Status.RUNNING
-                # Mapear estados terminales si el callback no se ha disparado aún
-                if state == GoalStatus.SUCCEEDED:
-                    self._succeeded = True
-                    self.done = True
-                elif state in (GoalStatus.ABORTED, GoalStatus.PREEMPTED, GoalStatus.REJECTED,
-                               GoalStatus.RECALLED, GoalStatus.LOST):
-                    self._succeeded = False
-                    self.done = True
-        except Exception as e:
-            rospy.logwarn(f"[{self.name}] No se pudo consultar estado del action client: {e}")
+        # Verificar self.done y self._succeeded
+        if self.done: # Si terminó, devolver SUCCESS/FAILURE según el resultado
+            if self._succeeded:
+                rospy.loginfo(f"[{self.name}] done -> returning SUCCESS")
+                self.blackboard.set("approach_done", True)
+                return py_trees.common.Status.SUCCESS
+            else:
+                rospy.loginfo(f"[{self.name}] done -> returning FAILURE")
+                self.blackboard.set("approach_done", False)
+                return py_trees.common.Status.FAILURE
+            
+        rospy.loginfo(f"[{self.name}] Force RUNNING")
+        return py_trees.common.Status.RUNNING
+        
+        # if not self._server_available:
+        #     rospy.logwarn(f"[{self.name}] server not available in update()")
+        #     return py_trees.common.Status.FAILURE
+
+        # # Si hay un goal en el cliente y sigue activo/pending, devolver RUNNING
+        # try:
+        #     if self._client is not None:
+        #         state = self._client.get_state()
+        #         if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+        #             rospy.loginfo(f"[{self.name}] Action state {state} -> RUNNING")
+        #             return py_trees.common.Status.RUNNING
+                
+        #         # Mapear estados terminales si el callback no se ha disparado aún
+        #         if state == GoalStatus.SUCCEEDED:
+        #             self._succeeded = True
+        #             self.done = True
+        #         elif state in (GoalStatus.ABORTED, GoalStatus.PREEMPTED, GoalStatus.REJECTED,
+        #                        GoalStatus.RECALLED, GoalStatus.LOST):
+        #             self._succeeded = False
+        #             self.done = True
+        # except Exception as e:
+        #     rospy.logwarn(f"[{self.name}] No se pudo consultar estado del action client: {e}")
 
         # Si enviamos un goal y aún no terminó, seguir RUNNING
-        if self._goal_sent and not self.done:
-            rospy.logdebug(f"[{self.name}] goal_sent and not done -> RUNNING")
-            return py_trees.common.Status.RUNNING
+        # if self._goal_sent and not self.done:
+        #     rospy.loginfo(f"[{self.name}] goal_sent and not done -> RUNNING")
+        #     return py_trees.common.Status.RUNNING
 
-        # Si terminó, devolver SUCCESS/FAILURE según el resultado
-        if self.done:
-            rospy.logdebug(f"[{self.name}] done -> returning final status ({self._succeeded})")
-            final = py_trees.common.Status.SUCCESS if self._succeeded else py_trees.common.Status.FAILURE
-            self._goal_sent = False
-            # --- NUEVO: marcar en el blackboard ---
-            if final == py_trees.common.Status.SUCCESS:
-                self.blackboard.set("approach_done", True)
-            return final
+        # rospy.loginfo(f"[{self.name}] RUNNING")
+        # return py_trees.common.Status.RUNNING
 
-        rospy.logdebug(f"[{self.name}] default RUNNING")
-        return py_trees.common.Status.RUNNING
 
-# Subclase para contacto
 class PlanAndContact(py_trees.behaviour.Behaviour):
     """Plan y contacto:  pero con approach_distance=0.0 y permite especificar wrist/normal/forearm."""
     def __init__(self, name="PlanAndContact"):
@@ -1057,7 +1052,7 @@ def create_pre_checks_subtree():
     # ? (Selector) "Asegurar Garra Abierta"
     ensure_gripper_open = py_trees.composites.Selector(
         name="Asegurar Garra Abierta",
-        memory=False,
+        memory=True,
         children=[
             IsGripperOpen(),
             OpenGripper()
@@ -1069,7 +1064,7 @@ def create_pre_checks_subtree():
         name="Asegurar Pose Inicial",
         memory=True,
         children=[
-            IsAtHomePose(),
+            py_trees.decorators.OneShot(IsAtHomePose(), "on_success"),
             GoToHome()
         ]
     )
@@ -1079,9 +1074,9 @@ def create_pre_checks_subtree():
         name="Pre-checks",
         memory=True,
         children=[
-            ensure_gripper_open,
-            RobotModeOk(),
-            ensure_home_pose # TODO: Revisar porq no se puede mover durante el movimiento porq se pelea con esta condicion
+            py_trees.decorators.OneShot(ensure_gripper_open, "on_success"),
+            py_trees.decorators.OneShot(RobotModeOk(), "on_success"),
+            py_trees.decorators.OneShot(ensure_home_pose, "on_success")
         ]
     )
     return pre_checks_root
@@ -1094,9 +1089,9 @@ def create_main_task_subtree():
         name="Aproximación",
         memory=True,
         children=[
-            IsWristDataAvailable(),
-            IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10),
-            PlanAndApproach()
+            py_trees.decorators.OneShot(IsWristDataAvailable(), "on_success"),
+            py_trees.decorators.OneShot(IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10), "on_success"),
+            py_trees.decorators.OneShot(PlanAndApproach(), "on_success")
         ]
     )
     
@@ -1205,7 +1200,7 @@ def create_root():
     # ? (Selector) "Try-catch structure"
     try_catch_block = py_trees.composites.Selector(
         name="Try-catch structure",
-        memory=False, # Sin memoria, para que siempre re-intente la tarea
+        memory=True, # Sin memoria, para que siempre re-intente la tarea
         children=[
             full_task_sequence,
             always_success_node
@@ -1224,7 +1219,7 @@ def create_root():
     # --- Parallel con subscripciones ---
     topics2bb = py_trees.composites.Parallel(
         name="Topics2BB",
-        policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE,
+        policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL, # todos deben tener éxito
         children=[
             SubscribeDummyTopic(),
             SubscribeRobotMode(),
@@ -1238,7 +1233,7 @@ def create_root():
     # --- Nuevo: Parallel con subscripción ---
     parallel_root = py_trees.composites.Parallel(
         name="Parallel: DummyTopic + MainTree",
-        policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE,
+        policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ALL, # todos deben tener éxito
         children=[
             topics2bb,
             root
@@ -1259,7 +1254,7 @@ def main():
 Recuerda la ubicación actual es Málaga, Andalusia, Spain.
     Inicializa ROS, crea el árbol, y lo ejecuta con tick_tock.
     """
-    rospy.init_node("fr3_grasp_behaviour_tree")
+    rospy.init_node("fr3_grasp_behaviour_tree", log_level=rospy.DEBUG)
     rospy.loginfo("Nodo de Árbol de Comportamiento iniciado.")
     
     py_bb = py_trees.blackboard.Blackboard()
