@@ -58,7 +58,7 @@ class VectorVisualizer:
         marker.lifetime = rospy.Duration(0)  # Dura indefinidamente
 
         self.marker_pub.publish(marker)
-        rospy.logdebug(f"Vector publicado en RViz: Origen={origin}, Dirección={vector}, Color={color}")
+        # rospy.logdebug(f"Vector publicado en RViz: Origen={origin}, Dirección={vector}, Color={color}")
 
 class PointVisualizer:
     def __init__(self, topic_name="/point_marker", frame_id="base_link"):
@@ -108,7 +108,7 @@ class PointVisualizer:
         marker.pose.orientation.w = 1.0  # Quaternion identidad
 
         self.marker_pub.publish(marker)
-        rospy.logdebug(f"Punto publicado en RViz: Coordenadas={np_point}, Color={color}")
+        # rospy.logdebug(f"Punto publicado en RViz: Coordenadas={np_point}, Color={color}")
 
 class PoseStampedVisualizer:
     def __init__(self, topic_name="/pose_stamped_marker", frame_id="base_link"):

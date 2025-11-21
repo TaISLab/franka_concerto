@@ -334,12 +334,12 @@ class Fr3ActionServer:
             while not rospy.is_shutdown():
                 
                 # --- CANCELACIÓN DESDE EL BT (preempt) ---
-                if self._as.is_preempt_requested():
-                    rospy.loginfo("¡Acción de vel cancelada (preempted)! Iniciando rampa a cero.")
-                    # self._as.set_preempted()
+                # if self._as.is_preempt_requested():
+                #     rospy.loginfo("¡Acción de vel cancelada (preempted)! Iniciando rampa a cero.")
+                #     # self._as.set_preempted()
 
-                    # Publicar inmediatamente comando de parada y luego intentar una deceleración suave
-                    rospy.loginfo("La tarea fue preempted (cancelada). Publicando parada segura.")
+                #     # Publicar inmediatamente comando de parada y luego intentar una deceleración suave
+                #     rospy.loginfo("La tarea fue preempted (cancelada). Publicando parada segura.")
 
                 if self._as.is_preempt_requested():
                     rospy.loginfo("¡Acción de Homing cancelada (preempted)! Iniciando rampa a cero.")

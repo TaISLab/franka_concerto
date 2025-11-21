@@ -7,25 +7,35 @@ Estructura: Try-Catch-Finally robusta.
 Stack: ROS 1 Noetic, Python, py_trees, py_trees_ros
 """
 
+# Basics
+import rospy
+import numpy as np
 import py_trees
 import py_trees_ros
-import rospy
 import time
+import math
+from scipy.spatial.transform import Rotation as R
+import actionlib
+from collections import deque
+
+# Mensajes
 import std_msgs.msg
 import franka_msgs.msg
 from skeleton_3d.msg import Skeleton3D
 from geometry_msgs.msg import PoseStamped
-import numpy as np
-from gripper_4f.srv import SetPWM, SetPWMResponse
-import math
-from scipy.spatial.transform import Rotation as R
-import actionlib
-from franka_concerto.msg import MoveFR3Action, MoveFR3Goal
-from actionlib_msgs.msg import GoalStatus
-from franka_concerto.funciones_utiles import calculate_gripper_position_forearm_correction, calculate_quaternion_0_F
-from collections import deque
-from franka_concerto.visualization_utils import VectorVisualizer, PointVisualizer
 from franka_buttons.msg import FrankaButtons
+
+from actionlib_msgs.msg import GoalStatus
+from franka_concerto.msg import MoveFR3Action, MoveFR3Goal # Acción de movimiento del FR3
+
+# Servicios
+from gripper_4f.srv import SetPWM, SetPWMResponse
+from std_srvs.srv import Trigger, TriggerResponse
+
+# Funciones y clases auxiliares
+from franka_concerto.visualization_utils import VectorVisualizer, PointVisualizer
+from franka_concerto.funciones_utiles import calculate_gripper_position_forearm_correction, calculate_quaternion_0_F
+
 ROSBAG_PLAYING = False # Evitar usar timestamps del bag para filtrar datos antiguos
 
 # --- Nodos Hoja (Plantillas) ---
@@ -49,7 +59,7 @@ class SubscribeDummyTopic(py_trees.behaviour.Behaviour):
         if self.msg is not None:
             py_trees.blackboard.Blackboard().set("dummy_topic_value", self.msg.data)
             rospy.loginfo(f"Dummy topic value set on blackboard: {self.msg.data}")
-            return py_trees.common.Status.SUCCESS
+            # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
 class SubscribeRobotMode(py_trees.behaviour.Behaviour):
@@ -71,7 +81,7 @@ class SubscribeRobotMode(py_trees.behaviour.Behaviour):
         if self.robot_mode is not None:
             py_trees.blackboard.Blackboard().set("robot_mode", self.robot_mode)
             rospy.loginfo(f"Robot mode set on blackboard: {self.robot_mode}")
-            return py_trees.common.Status.SUCCESS
+            # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING  
     
 class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
@@ -161,7 +171,7 @@ class SubscribeSkeleton3D(py_trees.behaviour.Behaviour):
             py_trees.blackboard.Blackboard().set("rwrist_kp", self.rwrist)
             py_trees.blackboard.Blackboard().set("wrist_normal", self.normal)
             py_trees.blackboard.Blackboard().set("skeleton_timestamp", self.kp_timestamp)
-            return py_trees.common.Status.SUCCESS
+            # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
     
 
@@ -183,7 +193,7 @@ class SubscribeGraspState(py_trees.behaviour.Behaviour):
     def update(self):
         if self.state is not None:
             py_trees.blackboard.Blackboard().set("gripper_closed", self.state)
-            return py_trees.common.Status.SUCCESS
+            # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
 
@@ -207,7 +217,7 @@ class SubscribeEEPose(py_trees.behaviour.Behaviour):
     def update(self):
         if self.msg is not None:
             py_trees.blackboard.Blackboard().set("ee_pose", self.msg)
-            return py_trees.common.Status.SUCCESS
+            # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
 class SubscribeFrankaButtons(py_trees.behaviour.Behaviour):
@@ -230,15 +240,51 @@ class SubscribeFrankaButtons(py_trees.behaviour.Behaviour):
         self.cross = msg.cross
 
         if self.cross == True:
-            rospy.logwarn("Franka Button CROSS pressed. Reset homing_done latch.")
+            rospy.logwarn(" Button CROSS pressed.")
             self.blackboard.set("homing_done", False)
             self.blackboard.set("approach_done", False)
             self.blackboard.set("contact_done", False)
+            self.blackboard.set("cancel_task", True)
 
     
     def update(self):
         
         return py_trees.common.Status.RUNNING
+
+# --- Neural Network Node ---
+class CallNNService(py_trees.behaviour.Behaviour):
+
+    def __init__(self, name="CallNNservice"):
+        super(CallNNService, self).__init__(name)
+        self.infer_value = None
+    
+    def setup(self, timeout):
+        rospy.wait_for_service('/pronation_inference_node/infer_pronation')
+        self.infer_service = rospy.ServiceProxy('/pronation_inference_node/infer_pronation', Trigger)
+        return True
+    
+    def initialise(self):
+        try:
+            response = self.infer_service()
+            if response.success:
+                self.infer_value = float(response.message)  # Asumimos que el mensaje contiene el valor inferido
+                rospy.loginfo(f"[{self.name}] NN Inference Success: {self.infer_value}")
+            else:
+                self.infer_value = None
+                rospy.logerr(f"[{self.name}] NN Inference Failed!")
+        except rospy.ServiceException as e:
+            rospy.logerr(f"Service call failed: {e}")
+            self.infer_value = None
+
+    def update(self):
+        if self.infer_value is not None:
+            py_trees.blackboard.Blackboard().set("nn_infer_value", self.infer_value)
+            rospy.loginfo(f"[{self.name}] NN Inference Value set on blackboard: {self.infer_value}")
+            return py_trees.common.Status.SUCCESS
+        else:
+            return py_trees.common.Status.FAILURE
+    
+
 
 # --- Hojas de Pre-checks ---
 
@@ -812,39 +858,17 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
                 self.blackboard.set("approach_done", False)
                 return py_trees.common.Status.FAILURE
             
-        rospy.loginfo(f"[{self.name}] Force RUNNING")
+        rospy.loginfo(f"[{self.name}] RUNNING")
         return py_trees.common.Status.RUNNING
         
-        # if not self._server_available:
-        #     rospy.logwarn(f"[{self.name}] server not available in update()")
-        #     return py_trees.common.Status.FAILURE
-
-        # # Si hay un goal en el cliente y sigue activo/pending, devolver RUNNING
-        # try:
-        #     if self._client is not None:
-        #         state = self._client.get_state()
-        #         if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
-        #             rospy.loginfo(f"[{self.name}] Action state {state} -> RUNNING")
-        #             return py_trees.common.Status.RUNNING
-                
-        #         # Mapear estados terminales si el callback no se ha disparado aún
-        #         if state == GoalStatus.SUCCEEDED:
-        #             self._succeeded = True
-        #             self.done = True
-        #         elif state in (GoalStatus.ABORTED, GoalStatus.PREEMPTED, GoalStatus.REJECTED,
-        #                        GoalStatus.RECALLED, GoalStatus.LOST):
-        #             self._succeeded = False
-        #             self.done = True
-        # except Exception as e:
-        #     rospy.logwarn(f"[{self.name}] No se pudo consultar estado del action client: {e}")
-
-        # Si enviamos un goal y aún no terminó, seguir RUNNING
-        # if self._goal_sent and not self.done:
-        #     rospy.loginfo(f"[{self.name}] goal_sent and not done -> RUNNING")
-        #     return py_trees.common.Status.RUNNING
-
-        # rospy.loginfo(f"[{self.name}] RUNNING")
-        # return py_trees.common.Status.RUNNING
+    def terminate(self, new_status):
+        # Si se interrumpe la acción, cancelar goal activo
+        if self._goal_sent and not self.done:
+            try:
+                self._client.cancel_goal()
+                rospy.loginfo(f"[{self.name}] Goal cancelado debido a terminación con nuevo estado {new_status}.")
+            except Exception as e:
+                rospy.logerr(f"[{self.name}] Error cancelando goal en terminate: {e}")
 
 
 class PlanAndContact(py_trees.behaviour.Behaviour):
@@ -1013,6 +1037,42 @@ class PlanAndContact(py_trees.behaviour.Behaviour):
         rospy.logdebug(f"[{self.name}] default RUNNING")
         return py_trees.common.Status.RUNNING
 
+class Timer(py_trees.behaviour.Behaviour):
+    """(Acción) Temporizador de timeout segundos."""
+    def __init__(self, name="Timer", timeout=5.0):
+        super(Timer, self).__init__(name)
+        self.timeout = float(timeout)
+        self.start_time = None
+
+    def initialise(self):
+        self.start_time = rospy.Time.now()
+        rospy.loginfo(f"[{self.name}] Waiting timeout={self.timeout}s...")
+
+    def update(self):
+        # Comprobar timeout
+        elapsed = (rospy.Time.now() - self.start_time).to_sec()
+        if elapsed >= self.timeout:
+            rospy.logwarn(f"[{self.name}] Timeout waiting for gripper to close.")
+            return py_trees.common.Status.SUCCESS
+
+        return py_trees.common.Status.RUNNING
+
+
+class CancelIfPressCrossButton(py_trees.behaviour.Behaviour):
+    """(Acción) Comprueba el valor de cancel_task en el blackboard y devuelve SUCCESS si es False y Failure si es True."""
+    def __init__(self, name="CancelIfPressCrossButton"):
+        super(CancelIfPressCrossButton, self).__init__(name)
+        self.blackboard = py_trees.blackboard.Blackboard()
+    
+    def update(self):
+        cancel_task = self.blackboard.get("cancel_task")
+        if cancel_task is True:
+            rospy.logwarn("Check: Cross Button Pressed! Cancelling task...")
+            return py_trees.common.Status.FAILURE
+        else:
+            # rospy.logwarn("Check: Cross Button Not Pressed. Continuing task...")
+            return py_trees.common.Status.SUCCESS
+
 # --- Hojas de Clean Up ---
 
 class IsAtRetractPose(py_trees.behaviour.Behaviour):
@@ -1043,6 +1103,18 @@ class Retract(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
+class ResetCancelTaskButton(py_trees.behaviour.Behaviour):
+    """(Acción) Resetea el botón de parada de emergencia."""
+    def __init__(self, name="ResetCancelTaskButton"):
+        super(ResetCancelTaskButton, self).__init__(name)
+        self.blackboard = py_trees.blackboard.Blackboard()
+
+    def initialise(self):
+        rospy.loginfo("Action: Resetting Cancel Task Button...")
+        self.blackboard.set("cancel_task", False)
+    
+    def update(self):
+        return py_trees.common.Status.SUCCESS
 
 # --- Funciones de Construcción ---
 
@@ -1064,7 +1136,7 @@ def create_pre_checks_subtree():
         name="Asegurar Pose Inicial",
         memory=True,
         children=[
-            py_trees.decorators.OneShot(IsAtHomePose(), "on_success"),
+            IsAtHomePose(),
             GoToHome()
         ]
     )
@@ -1074,9 +1146,9 @@ def create_pre_checks_subtree():
         name="Pre-checks",
         memory=True,
         children=[
-            py_trees.decorators.OneShot(ensure_gripper_open, "on_success"),
-            py_trees.decorators.OneShot(RobotModeOk(), "on_success"),
-            py_trees.decorators.OneShot(ensure_home_pose, "on_success")
+            ensure_gripper_open,
+            RobotModeOk(),
+            ensure_home_pose
         ]
     )
     return pre_checks_root
@@ -1089,9 +1161,9 @@ def create_main_task_subtree():
         name="Aproximación",
         memory=True,
         children=[
-            py_trees.decorators.OneShot(IsWristDataAvailable(), "on_success"),
-            py_trees.decorators.OneShot(IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10), "on_success"),
-            py_trees.decorators.OneShot(PlanAndApproach(), "on_success")
+            IsWristDataAvailable(),
+            IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10),
+            PlanAndApproach()
         ]
     )
     
@@ -1110,8 +1182,9 @@ def create_main_task_subtree():
         memory=True,
         children=[
             CloseGripper(),
-            # IsGraspGood(),
-            # RunNeuralNet()
+            Timer(timeout=2.0),
+            CallNNService(),
+            Timer(timeout=2.0),
         ]
     )
 
@@ -1163,11 +1236,12 @@ def create_cleanup_subtree():
     # -> (Sequence) "Clean up"
     cleanup_root = py_trees.composites.Sequence(
         name="Clean up",
-        memory=True,
+        memory=False,
         children=[
-            ensure_gripper_open,
-            ensure_retract,
-            ensure_home
+            # ensure_gripper_open,
+            # ensure_retract,
+            # ensure_home
+            ResetCancelTaskButton()
         ]
     )
     return cleanup_root
@@ -1187,8 +1261,9 @@ def create_root():
     # -> (Sequence) "Pre-checks + Tarea principal"
     full_task_sequence = py_trees.composites.Sequence(
         name="Attempt block",
-        memory=True, # Memoria para la secuencia de tareas
+        memory=False, # Memoria para la secuencia de tareas
         children=[
+            CancelIfPressCrossButton(),
             pre_checks_subtree,
             main_task_subtree
         ]
@@ -1200,7 +1275,7 @@ def create_root():
     # ? (Selector) "Try-catch structure"
     try_catch_block = py_trees.composites.Selector(
         name="Try-catch structure",
-        memory=True, # Sin memoria, para que siempre re-intente la tarea
+        memory=False, # Sin memoria, para que siempre re-intente la tarea
         children=[
             full_task_sequence,
             always_success_node
@@ -1210,10 +1285,10 @@ def create_root():
     # -> (Sequence) "Try-finally structure" (RAÍZ)
     root = py_trees.composites.Sequence(
         name="Try-finally structure",
-        memory=True,
+        memory=False,
         children=[
             try_catch_block,
-            # cleanup_subtree # DEBUG TREE. DESCOMENTAR
+            cleanup_subtree # DEBUG TREE. DESCOMENTAR
         ]
     )
     # --- Parallel con subscripciones ---
@@ -1240,21 +1315,16 @@ def create_root():
         ]
     )
 
-
-
-
     return parallel_root
-
 
 
 # --- Bucle Principal de py_trees_ros ---
 
 def main():
     """
-Recuerda la ubicación actual es Málaga, Andalusia, Spain.
     Inicializa ROS, crea el árbol, y lo ejecuta con tick_tock.
     """
-    rospy.init_node("fr3_grasp_behaviour_tree", log_level=rospy.DEBUG)
+    rospy.init_node("fr3_grasp_behaviour_tree", log_level=rospy.INFO)
     rospy.loginfo("Nodo de Árbol de Comportamiento iniciado.")
     
     py_bb = py_trees.blackboard.Blackboard()
