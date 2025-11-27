@@ -37,6 +37,14 @@ from franka_concerto.visualization_utils import VectorVisualizer, PointVisualize
 from franka_concerto.funciones_utiles import calculate_gripper_position_forearm_correction, calculate_quaternion_0_F
 
 ROSBAG_PLAYING = False # Evitar usar timestamps del bag para filtrar datos antiguos
+APROX_BY_NORMAL_VECTOR = True # TRUE: vector normal False: qx=1, qy=qz=qw0 garra hacia abajo
+# Puntos de la tarea
+PT1 = [0.4,  0.0, 0.6] # Punto tarea 1
+PT2 = [0.4, 0.0, 0.4] # Punto tarea 2
+PT3 = [0.4, 0.0, 0.6] # Punto tarea 3
+PT4 = [0.4,  0.0, 0.4] # Punto tarea 4
+L1 = 0.3  # Longitud brazo humano (hombro-codo) aprox
+L2 = 0.3  # Longitud antebrazo humano (codo-muñeca) aprox
 
 # --- Nodos Hoja (Plantillas) ---
 # Rellena la lógica de ROS (subs, pubs, services, actions) aquí.
@@ -259,7 +267,7 @@ class CallNNService(py_trees.behaviour.Behaviour):
         self.infer_value = None
     
     def setup(self, timeout):
-        rospy.wait_for_service('/pronation_inference_node/infer_pronation')
+        rospy.wait_for_service('/pronation_inference_node/infer_pronation', timeout=2.0)
         self.infer_service = rospy.ServiceProxy('/pronation_inference_node/infer_pronation', Trigger)
         return True
     
@@ -331,7 +339,7 @@ class GripperPWMAction(py_trees.behaviour.Behaviour):
         self.blackboard = py_trees.blackboard.Blackboard()
 
     def setup(self, timeout):
-        rospy.wait_for_service('/gripper_4f/set_pwm')
+        rospy.wait_for_service('/gripper_4f/set_pwm', timeout=2.0)
         self.set_pwm_service = rospy.ServiceProxy('/gripper_4f/set_pwm', SetPWM)
         return super().setup(timeout)
 
@@ -372,7 +380,7 @@ class CloseGripper(GripperPWMAction):
 
 class IsAtHomePose(py_trees.behaviour.Behaviour):
     """(Condición) Robot pose inicial?"""
-    def __init__(self, name="IsAtHomePose", pos_tol=0.02, ori_tol_deg=5.0):
+    def __init__(self, name="IsAtHomePose", pos_tol=0.01, ori_tol_deg=3.0):
         super(IsAtHomePose, self).__init__(name)
         self.blackboard = py_trees.blackboard.Blackboard()
         # homing_pose ya la estás definiendo en __init__ (ej. como PoseStamped)
@@ -737,7 +745,6 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
                 self._goal_sent = True
                 return
         except Exception:
-            # si no podemos consultar, intentamos de todos modos (log)
             rospy.logdebug(f"[{self.name}] No se pudo consultar estado del action client antes de enviar.")
 
         # Leer datos del blackboard
@@ -787,16 +794,26 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
             rospy.logerr(f"[{self.name}] Error calculando posición de approach: {e}")
             return
 
-        # calcular orientación (igual que hri_states_machine)
-        try:
-            quat_pose = calculate_quaternion_0_F(-forearm, -normal_arr)
+        # Calcular orientación de aproximación (igual que hri_states_machine)
+        if APROX_BY_NORMAL_VECTOR:
+            # Aproximarse por el vector normal
+            try:
+                quat_pose = calculate_quaternion_0_F(-forearm, -normal_arr)
+                qx = quat_pose.x
+                qy = quat_pose.y
+                qz = quat_pose.z
+                qw = quat_pose.w
+            except Exception as e:
+                rospy.logerr(f"[{self.name}] Error calculando orientación: {e}")
+                return
+        else:
+            # APROX_BY_FIXED_QUATERNION. LA Z es fija, la X NO
+            vector_z = np.array([0.0, 0.0, 1.0]) # Respecto al mundo
+            quat_pose = calculate_quaternion_0_F(-forearm, -vector_z)
             qx = quat_pose.x
             qy = quat_pose.y
             qz = quat_pose.z
             qw = quat_pose.w
-        except Exception as e:
-            rospy.logerr(f"[{self.name}] Error calculando orientación: {e}")
-            return
 
         rospy.loginfo(f"[{self.name}] Approach pose: x={approach_point.x:.3f}, y={approach_point.y:.3f}, z={approach_point.z:.3f}")
 
@@ -870,7 +887,6 @@ class PlanAndApproach(py_trees.behaviour.Behaviour):
             except Exception as e:
                 rospy.logerr(f"[{self.name}] Error cancelando goal en terminate: {e}")
 
-
 class PlanAndContact(py_trees.behaviour.Behaviour):
     """Plan y contacto:  pero con approach_distance=0.0 y permite especificar wrist/normal/forearm."""
     def __init__(self, name="PlanAndContact"):
@@ -927,7 +943,6 @@ class PlanAndContact(py_trees.behaviour.Behaviour):
                 self._goal_sent = True
                 return
         except Exception:
-            # si no podemos consultar, intentamos de todos modos (log)
             rospy.logdebug(f"[{self.name}] No se pudo consultar estado del action client antes de enviar.")
 
         # calcular pose de aproximación (kp_wrist + normal * approach_distance) con corrección de antebrazo
@@ -1036,6 +1051,160 @@ class PlanAndContact(py_trees.behaviour.Behaviour):
         # Caso por defecto: RUNNING (evita reentradas que provoquen initialise/reenvío)
         rospy.logdebug(f"[{self.name}] default RUNNING")
         return py_trees.common.Status.RUNNING
+    
+class PlanAndMoveWithVelocityCompliance(py_trees.behaviour.Behaviour):
+    """
+    Envía un goal de tipo VELOCITY_COMPLIANCE_MOVE a un punto especificado.
+    - `target_point`: iterable [x,y,z] opcional. Si es None, se lee del blackboard
+      usando la clave `target_point_key` (por defecto "velocity_compliance_point").
+    - El controlador NO usa orientación; se pone un quaternion placeholder.
+    """
+    def __init__(self, name="PlanAndMoveWithVelocityCompliance",
+                 target_point=None,
+                 target_point_key="velocity_compliance_point",
+                 max_velocity=0.1,
+                 task_type=3):
+        super(PlanAndMoveWithVelocityCompliance, self).__init__(name)
+        self.blackboard = py_trees.blackboard.Blackboard()
+        self.target_point = target_point
+        self.target_point_key = target_point_key
+        self.task_type = task_type
+        self.max_velocity = max_velocity
+
+        self._client = None
+        self._server_available = False
+        self._goal_sent = False
+        self._succeeded = False
+        self.done = False
+
+    def setup(self, timeout):
+        self._client = actionlib.SimpleActionClient('fr3_motion_server', MoveFR3Action)
+        try:
+            ok = self._client.wait_for_server(rospy.Duration(2.0))
+            self._server_available = bool(ok)
+            if ok:
+                rospy.loginfo(f"[{self.name}] Conectado a fr3_motion_server.")
+            else:
+                rospy.logwarn(f"[{self.name}] No se encontró fr3_motion_server (timeout).")
+        except Exception as e:
+            self._server_available = False
+            rospy.logwarn(f"[{self.name}] Excepción esperando al servidor: {e}")
+        return True
+
+    def initialise(self):
+        # evitar reenvío si ya hay goal activo
+        if self._goal_sent and not self.done:
+            rospy.logdebug(f"[{self.name}] initialise called but goal already sent and not done; skipping re-send")
+            return
+
+        self.done = False
+        self._succeeded = False
+
+        if not self._server_available:
+            rospy.logerr(f"[{self.name}] Servidor de acción no disponible.")
+            return
+
+        # Obtener punto objetivo (prioridad: parámetro > blackboard)
+        pt = None
+        if self.target_point is not None:
+            pt = np.array(self.target_point, dtype=float)
+        else:
+            bb_pt = self.blackboard.get(self.target_point_key)
+            if bb_pt is not None:
+                try:
+                    pt = np.array(bb_pt, dtype=float)
+                except Exception:
+                    rospy.logwarn(f"[{self.name}] Punto en blackboard '{self.target_point_key}' inválido: {bb_pt}")
+                    pt = None
+
+        if pt is None or len(pt) < 3:
+            rospy.logerr(f"[{self.name}] No hay punto objetivo válido (ni parámetro ni '{self.target_point_key}' en blackboard).")
+            return
+
+        # Si el cliente ya tiene un goal PENDING/ACTIVE, no reenviamos
+        try:
+            state = self._client.get_state()
+            if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                rospy.loginfo(f"[{self.name}] Action client already has active goal (state={state}), not resending.")
+                self._goal_sent = True
+                return
+        except Exception:
+            rospy.logdebug(f"[{self.name}] No se pudo consultar estado del action client antes de enviar.")
+
+        # Construir goal: usamos orientation placeholder (no usada por el controlador)
+        goal = MoveFR3Goal()
+        goal.task_type = self.task_type
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.header.frame_id = "fr3_link0"
+        goal.target_pose.pose.position.x = float(pt[0])
+        goal.target_pose.pose.position.y = float(pt[1])
+        goal.target_pose.pose.position.z = float(pt[2])
+        # orientación placeholder (identidad)
+        goal.target_pose.pose.orientation.x = 0.0
+        goal.target_pose.pose.orientation.y = 0.0
+        goal.target_pose.pose.orientation.z = 0.0
+        goal.target_pose.pose.orientation.w = 1.0
+        goal.max_velocity = self.max_velocity
+
+        try:
+            self._client.send_goal(goal, done_cb=self._done_cb, feedback_cb=self._feedback_cb)
+            self._goal_sent = True
+            rospy.loginfo(f"[{self.name}] Goal (velocity compliance) enviado a fr3_motion_server: [{pt[0]:.3f}, {pt[1]:.3f}, {pt[2]:.3f}]")
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] Error enviando goal: {e}")
+            self._goal_sent = False
+            self._succeeded = False
+            self.done = True
+
+    def _feedback_cb(self, feedback):
+        pass
+
+    def _done_cb(self, state, result):
+        try:
+            if state == GoalStatus.SUCCEEDED:
+                self._succeeded = True
+                self.blackboard.set("contact_done", True)
+                rospy.loginfo(f"[{self.name}] Acción completada: SUCCEEDED")
+            else:
+                self._succeeded = False
+                rospy.logwarn(f"[{self.name}] Acción terminada con estado {state}")
+        except Exception:
+            self._succeeded = False
+        finally:
+            self.done = True
+            self._goal_sent = False
+
+    def update(self):
+        if not self._server_available:
+            rospy.logwarn(f"[{self.name}] server not available in update()")
+            return py_trees.common.Status.FAILURE
+
+        try:
+            if self._client is not None:
+                state = self._client.get_state()
+                if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                    rospy.logdebug(f"[{self.name}] Action state {state} -> RUNNING")
+                    return py_trees.common.Status.RUNNING
+                if state == GoalStatus.SUCCEEDED:
+                    self._succeeded = True
+                    self.done = True
+                elif state in (GoalStatus.ABORTED, GoalStatus.PREEMPTED, GoalStatus.REJECTED,
+                               GoalStatus.RECALLED, GoalStatus.LOST):
+                    self._succeeded = False
+                    self.done = True
+        except Exception as e:
+            rospy.logwarn(f"[{self.name}] No se pudo consultar estado del action client: {e}")
+
+        if self._goal_sent and not self.done:
+            rospy.logdebug(f"[{self.name}] goal_sent and not done -> RUNNING")
+            return py_trees.common.Status.RUNNING
+
+        if self.done:
+            final = py_trees.common.Status.SUCCESS if self._succeeded else py_trees.common.Status.FAILURE
+            self._goal_sent = False
+            return final
+
+        return py_trees.common.Status.RUNNING
 
 class Timer(py_trees.behaviour.Behaviour):
     """(Acción) Temporizador de timeout segundos."""
@@ -1057,7 +1226,6 @@ class Timer(py_trees.behaviour.Behaviour):
 
         return py_trees.common.Status.RUNNING
 
-
 class CancelIfPressCrossButton(py_trees.behaviour.Behaviour):
     """(Acción) Comprueba el valor de cancel_task en el blackboard y devuelve SUCCESS si es False y Failure si es True."""
     def __init__(self, name="CancelIfPressCrossButton"):
@@ -1072,6 +1240,185 @@ class CancelIfPressCrossButton(py_trees.behaviour.Behaviour):
         else:
             # rospy.logwarn("Check: Cross Button Not Pressed. Continuing task...")
             return py_trees.common.Status.SUCCESS
+        
+class VerifyHumanCanTask(py_trees.behaviour.Behaviour):
+    """
+    Nodo que verifica si el humano puede realizar la tarea.
+    Tarea: cuadrado vertical con la mano derecha.
+    Comprueba si la mano derecha está en una posición adecuada.
+
+    Los puntos de la tarea son: PT1, PT2, PT3, PT4 (definidos en el blackboard).
+    La distancia máxima entre hombro y los puntos T debe ser menor que l1+l2 (longitud brazo humano).
+    Si es así, devuelve SUCCESS si puede, FAILURE si no puede.
+    """
+    def __init__(self, name="VerifyHumanCanTask"):
+        super(VerifyHumanCanTask, self).__init__(name)
+
+        self.blackboard = py_trees.blackboard.Blackboard()
+        self.human_can_task = None
+        self.shoulder =  self.blackboard.get("rshoulder_kp")
+        self.l1 = L1  # longitud húmero (m)
+        self.l2 = L2  # longitud antebrazo (m)
+
+        if self.shoulder is None:
+            rospy.logwarn(f"[{self.name}] shoulder keypoint not found in blackboard during init.")
+        else:
+            rospy.loginfo(f"[{self.name}] Initialized with shoulder at ({self.shoulder.x}, {self.shoulder.y}, {self.shoulder.z})")
+
+            # Calcular distancia máxima alcanzable
+            self.max_reach = self.l1 + self.l2
+
+            # Calcular distancias a los puntos de la tarea PT1, PT2, PT3, PT4
+            self.task_points = [PT1, PT2, PT3, PT4]  # Definir estos puntos en coordenadas 3D
+            self.distances = []
+            for i, pt in enumerate(self.task_points):
+                dist = np.linalg.norm(np.array([pt.x - self.shoulder.x,
+                                                pt.y - self.shoulder.y,
+                                                pt.z - self.shoulder.z]))
+                self.distances.append(dist)
+                rospy.loginfo(f"[{self.name}] Distance to PT{i+1}: {dist:.3f} m")
+
+            if all(dist <= self.max_reach for dist in self.distances):
+                rospy.loginfo(f"[{self.name}] Human can perform the task.")
+                self.human_can_task = True
+            else:
+                rospy.logwarn(f"[{self.name}] Human cannot perform the task.")
+                self.human_can_task = False
+        
+    def update(self):
+        if self.human_can_task is True:
+            return py_trees.common.Status.SUCCESS
+        else:
+            return py_trees.common.Status.FAILURE
+
+class PlanAndExecuteMultiPoint(py_trees.behaviour.Behaviour):
+    """
+    Envía secuencialmente una lista de puntos [ [x,y,z], ... ] como goals
+    al 'fr3_motion_server'. Lee puntos desde constructor o desde blackboard
+    (clave por defecto 'multi_point_list'). Maneja preempt y espera settling.
+    """
+    def __init__(self, name="PlanAndExecuteMultiPoint", points=None, bb_key="multi_point_list", max_velocity=0.1, settle_time=1.0):
+        super(PlanAndExecuteMultiPoint, self).__init__(name)
+        self.points = points
+        self.bb_key = bb_key
+        self.max_velocity = max_velocity
+        self.settle_time = float(settle_time)
+        self.client = None
+        self._server_available = False
+        self._goal_sent = False
+        self._current_idx = 0
+        self._done = False
+        self._succeeded = False
+        self.blackboard = py_trees.blackboard.Blackboard()
+
+    def setup(self, timeout):
+        self.client = actionlib.SimpleActionClient('fr3_motion_server', MoveFR3Action)
+        try:
+            ok = self.client.wait_for_server(rospy.Duration(2.0))
+            self._server_available = bool(ok)
+        except Exception:
+            self._server_available = False
+        return True
+
+    def initialise(self):
+        self._done = False
+        self._succeeded = False
+        self._goal_sent = False
+        self._current_idx = 0
+
+        if self.points is None:
+            bb_pts = self.blackboard.get(self.bb_key)
+            if bb_pts is None:
+                rospy.logerr(f"[{self.name}] No points provided and '{self.bb_key}' not on blackboard")
+                return
+            try:
+                self.points = [np.array(p, dtype=float) for p in bb_pts]
+            except Exception:
+                rospy.logerr(f"[{self.name}] Invalid points format in blackboard '{self.bb_key}'")
+                return
+
+        if not self.points or not self._server_available:
+            rospy.logerr(f"[{self.name}] No server or empty points list")
+            return
+
+        self._send_next_goal()
+
+    def _send_next_goal(self):
+        if self._current_idx >= len(self.points):
+            self._done = True
+            self._succeeded = True
+            return
+        pt = self.points[self._current_idx]
+        goal = MoveFR3Goal()
+        goal.task_type = MoveFR3Goal.TASK_IMPEDANCE_MOVE if hasattr(MoveFR3Goal, 'TASK_IMPEDANCE_MOVE') else 1
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.header.frame_id = "fr3_link0"
+        goal.target_pose.pose.position.x = float(pt[0])
+        goal.target_pose.pose.position.y = float(pt[1])
+        goal.target_pose.pose.position.z = float(pt[2])
+        # placeholder orientation
+        goal.target_pose.pose.orientation.x = 1.0
+        goal.target_pose.pose.orientation.y = 0.0
+        goal.target_pose.pose.orientation.z = 0.0
+        goal.target_pose.pose.orientation.w = 0.0
+        goal.max_velocity = self.max_velocity
+        try:
+            self.client.send_goal(goal)
+            self._goal_sent = True
+            rospy.loginfo(f"[{self.name}] Enviado punto {self._current_idx+1}/{len(self.points)}: {pt}")
+        except Exception as e:
+            rospy.logerr(f"[{self.name}] Error enviando goal: {e}")
+            self._done = True
+            self._succeeded = False
+
+    def update(self):
+        # preempt handling
+        if self._done:
+            return py_trees.common.Status.SUCCESS if self._succeeded else py_trees.common.Status.FAILURE
+
+        if self.client is None or not self._server_available:
+            return py_trees.common.Status.FAILURE
+
+        if self._goal_sent:
+            state = self.client.get_state()
+            if state == GoalStatus.SUCCEEDED:
+                rospy.loginfo(f"[{self.name}] Punto {self._current_idx+1} alcanzado, esperando settle {self.settle_time}s")
+                # esperar settling
+                rospy.sleep(self.settle_time)
+                self._current_idx += 1
+                self._goal_sent = False
+                self._send_next_goal()
+                return py_trees.common.Status.RUNNING
+            elif state in (GoalStatus.ACTIVE, GoalStatus.PENDING):
+                return py_trees.common.Status.RUNNING
+            else:
+                rospy.logwarn(f"[{self.name}] Goal {self._current_idx+1} terminado con estado {state}")
+                self._succeeded = False
+                self._done = True
+                return py_trees.common.Status.FAILURE
+        else:
+            # en caso no haya goal_sent (p. ej. initialise falló), regresar RUNNING para permitir reintento
+            return py_trees.common.Status.RUNNING
+
+    def terminate(self, new_status):
+        if self.client is None or not getattr(self, "_goal_sent", False):
+            self._goal_sent = False
+            self._done = True
+            self._succeeded = False
+            return
+        try:
+            state = self.client.get_state()
+            if state in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                self.client.cancel_goal()
+                rospy.loginfo(f"[{self.name}] Cancelado goal multipunto por terminate({new_status}).")
+            else:
+                rospy.loginfo(f"[{self.name}] terminate(): client state {state} -> no se cancela.")
+        except Exception as e:
+            rospy.logwarn(f"[{self.name}] Error cancelando goal multipunto en terminate: {e}")
+        finally:
+            self._goal_sent = False
+            self._done = True
+            self._succeeded = False
 
 # --- Hojas de Clean Up ---
 
@@ -1195,7 +1542,8 @@ def create_main_task_subtree():
         children=[
             approach_seq,
             contact_seq,
-            grasp_seq
+            grasp_seq,
+            PlanAndExecuteMultiPoint(points=[PT1, PT2, PT3, PT4], max_velocity=0.1, settle_time=2.0)
         ]
     )
     return main_task_root
@@ -1238,9 +1586,9 @@ def create_cleanup_subtree():
         name="Clean up",
         memory=False,
         children=[
-            # ensure_gripper_open,
-            # ensure_retract,
-            # ensure_home
+            ensure_gripper_open,
+            #ensure_retract,
+            ensure_home,
             ResetCancelTaskButton()
         ]
     )
@@ -1340,9 +1688,9 @@ def main():
     rospy.loginfo("DEBUG1: Configurando el árbol...")
     try:
         tree.setup(timeout=15)
-    except py_trees_ros.exceptions.TimedOutError as e:
-        rospy.logerr(f"Fallo al configurar el árbol: {e}")
-        return
+    # except py_trees_ros.exceptions.TimedOutError as e:
+    #     rospy.logerr(f"Fallo al configurar el árbol: {e}")
+    #     return
     except Exception as e:
         rospy.logerr(f"Fallo desconocido en la configuración: {e}")
         return
