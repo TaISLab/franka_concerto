@@ -88,7 +88,7 @@ class SubscribeRobotMode(py_trees.behaviour.Behaviour):
     def update(self):
         if self.robot_mode is not None:
             py_trees.blackboard.Blackboard().set("robot_mode", self.robot_mode)
-            rospy.loginfo(f"Robot mode set on blackboard: {self.robot_mode}")
+            # rospy.loginfo(f"Robot mode set on blackboard: {self.robot_mode}")
             # return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING  
     
@@ -1450,15 +1450,19 @@ class Retract(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.SUCCESS
         return py_trees.common.Status.RUNNING
 
-class ResetCancelTaskButton(py_trees.behaviour.Behaviour):
+class ResetVariables(py_trees.behaviour.Behaviour):
     """(Acción) Resetea el botón de parada de emergencia."""
-    def __init__(self, name="ResetCancelTaskButton"):
-        super(ResetCancelTaskButton, self).__init__(name)
+    def __init__(self, name="ResetVariables"):
+        super(ResetVariables, self).__init__(name)
         self.blackboard = py_trees.blackboard.Blackboard()
 
     def initialise(self):
         rospy.loginfo("Action: Resetting Cancel Task Button...")
         self.blackboard.set("cancel_task", False)
+        self.blackboard.set("homing_done", False)
+        self.blackboard.set("approach_done", False)
+        self.blackboard.set("contact_done", False)
+        self.blackboard.set("grasp_done", False)
     
     def update(self):
         return py_trees.common.Status.SUCCESS
@@ -1471,7 +1475,7 @@ def create_pre_checks_subtree():
     # ? (Selector) "Asegurar Garra Abierta"
     ensure_gripper_open = py_trees.composites.Selector(
         name="Asegurar Garra Abierta",
-        memory=True,
+        memory=True, # TODO: cambiar a variable BB
         children=[
             IsGripperOpen(),
             OpenGripper()
@@ -1572,14 +1576,14 @@ def create_cleanup_subtree():
     )
 
     # ? (Selector) "Asegurar Reposo"
-    ensure_home = py_trees.composites.Selector(
-        name="Asegurar Reposo (CU)",
-        memory=True,
-        children=[
-            IsAtHomePose(),
-            GoToHome()
-        ]
-    )
+    # ensure_home = py_trees.composites.Selector(
+    #     name="Asegurar Reposo (CU)",
+    #     memory=True,
+    #     children=[
+    #         IsAtHomePose(),
+    #         GoToHome()
+    #     ]
+    # )
 
     # -> (Sequence) "Clean up"
     cleanup_root = py_trees.composites.Sequence(
@@ -1588,8 +1592,8 @@ def create_cleanup_subtree():
         children=[
             ensure_gripper_open,
             #ensure_retract,
-            ensure_home,
-            ResetCancelTaskButton()
+            GoToHome(),
+            ResetVariables(),
         ]
     )
     return cleanup_root
