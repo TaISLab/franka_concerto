@@ -22,21 +22,28 @@ from controller_manager_msgs.srv import SwitchController, SwitchControllerReques
 from controller_manager_msgs.srv import LoadController, LoadControllerRequest
 from control_msgs.msg import FollowJointTrajectoryResult, FollowJointTrajectoryActionResult
 
+SEND_ORIENTATION = True
+
 class Fr3ActionServer:
     
     # --- CONSTANTES ---
     # Nombres de controladores (ajusta según tu config .yaml)
     VELOCITY_CONTROLLER_NAME = "cartesian_velocity_external_controller"
+    VELOCITY_ANGULAR_COMPLIANCE_CONTROLLER_NAME = "cartesian_velocity_angular_compliance_controller"
     IMPEDANCE_CONTROLLER_NAME = "cartesian_impedance_example_controller" 
     EFFORT_CONTROLLER_NAME = "effort_joint_trajectory_controller"
     
     # Parámetros de Homing (¡Ajústalos a tu robot!)
     HOME_POSE_POSITION = np.array([0.5, 0.0, 0.3]) # x, y, z
     HOME_POSE_ORIENTATION = np.array([1.0, 0.0, 0.0, 0.0]) # x, y, z, w (apuntando hacia abajo)
-    HOMING_MAX_SPEED = 0.04  # m/s (¡Límite de velocidad para homing!)
-    HOMING_P_GAIN = 0.8     # Ganancia proporcional para el control de homing
+    HOMING_MAX_SPEED = 0.1  # m/s (¡Límite de velocidad para homing!)
+    HOMING_P_GAIN = 1.0     # Ganancia proporcional para el control de homing
     HOMING_POS_THRESHOLD = 0.01 # 1 cm
-    
+    ORIENTATION_P_GAIN = 1.5  # Ganancia proporcional para orientación
+    MAX_ANGULAR_SPEED = 0.3  # rad/s
+    SETTLING_TIMEOUT = 5.0  # IMPEDANCIA: segundos para esperar a que el robot se estabilice tras trayectoria
+    IMPEDANCE_POS_THRESHOLD = 0.10 # 10 cm
+
     def __init__(self):
         rospy.init_node("fr3_motion_action_server")
 
@@ -275,6 +282,9 @@ class Fr3ActionServer:
         elif task_type == 2: # MoveFR3Goal.TASK_JOINT_POSE_EFFORT
             rospy.loginfo("Tipo de Tarea: JOINT POSE + ESFUERZO")
             success = self._handle_joint_pose_effort(goal)
+        elif task_type == 3: # MoveFR3Goal.TASK_VELOCITY_ANGULAR_COMPLIANCE
+            rospy.loginfo("Tipo de Tarea: VELOCITY + ANGULAR COMPLIANCE")
+            success = self._handle_velocity_angular_compliance(goal)
         else:
             self._result.success = False
             self._result.message = f"Tipo de tarea desconocido: {task_type}"
@@ -379,14 +389,14 @@ class Fr3ActionServer:
                     axis = axis * (max_angle / np.linalg.norm(axis))
 
                 # Control P para orientación
-                ORIENTATION_P_GAIN = 0.8
-                ang_cmd = ORIENTATION_P_GAIN * axis
+                
+                ang_cmd = self.ORIENTATION_P_GAIN * axis
 
                 # Limita velocidad angular máxima
-                MAX_ANGULAR_SPEED = 0.2  # rad/s
+                
                 ang_speed = np.linalg.norm(ang_cmd)
-                if ang_speed > MAX_ANGULAR_SPEED:
-                    ang_cmd = ang_cmd * (MAX_ANGULAR_SPEED / ang_speed)
+                if ang_speed > self.MAX_ANGULAR_SPEED:
+                    ang_cmd = ang_cmd * (self.MAX_ANGULAR_SPEED / ang_speed)
 
                 # Suavizado exponencial angular
                 ang_cmd = alpha * ang_cmd + (1 - alpha) * prev_ang_cmd
@@ -443,6 +453,108 @@ class Fr3ActionServer:
 
         # Ojo: aquí ya hemos frenado suavemente, no mandes un cero de golpe
         rospy.loginfo("Homing finalizado con parada suave.")
+        return True
+    
+    def _handle_velocity_angular_compliance(self, goal):
+        """
+        Lógica simplificada: solo control de velocidad lineal.
+        El controlador no procesa velocidad angular, así que
+        eliminamos todo lo relativo a orientación/velocidad angular.
+        """
+        if not self._switch_controller(self.VELOCITY_ANGULAR_COMPLIANCE_CONTROLLER_NAME):
+            rospy.logerr("Velocity compliance fallido: No se pudo activar el controlador de velocidad compliance.")
+            return False
+
+        rate = rospy.Rate(100)  # 100 Hz
+        twist_msg = Twist()
+
+        # Pose objetivo del goal (solo posición)
+        target_pos = np.array([
+            goal.target_pose.pose.position.x,
+            goal.target_pose.pose.position.y,
+            goal.target_pose.pose.position.z
+        ])
+
+        # Parámetros de suavizado lineal
+        alpha = 0.1  # Suavizado exponencial
+        prev_vel_cmd = np.zeros(3)
+
+        try:
+            while not rospy.is_shutdown():
+
+                # Cancelación desde el cliente (preempt)
+                if self._as.is_preempt_requested():
+                    rospy.loginfo("¡Acción de Velocity compliance cancelada (preempted)! Iniciando rampa a cero.")
+                    try:
+                        self._ramp_down_velocity(rate_hz=100.0, alpha=0.9, timeout=3.0, tol=1e-3)
+                    except Exception as e:
+                        rospy.logwarn(f"Error durante deceleración tras preempt: {e}")
+
+                    rospy.loginfo("Robot detenido tras preempt.")
+                    self._as.set_preempted()
+                    return False
+
+                # --- Cálculo normal del comando de velocidad (solo lineal) ---
+                current_pos = np.array([
+                    self.current_pose.pose.position.x,
+                    self.current_pose.pose.position.y,
+                    self.current_pose.pose.position.z
+                ])
+                error_pos = target_pos - current_pos
+                distance = np.linalg.norm(error_pos)
+
+                # Feedback mínimo
+                self._feedback.current_pose = self.current_pose
+                self._feedback.distance_to_goal = distance
+                self._as.publish_feedback(self._feedback)
+
+                # Condición de llegada (usa mismo umbral que homing)
+                if distance < self.HOMING_POS_THRESHOLD:
+                    rospy.loginfo("Reached target (velocity compliance). Iniciando rampa final a cero.")
+                    try:
+                        self._ramp_down_velocity(rate_hz=100.0, alpha=0.6, timeout=10.0, tol=1e-3)
+                    except Exception as e:
+                        rospy.logwarn(f"Error durante deceleración final: {e}")
+                    break
+
+                # Limita el error máximo para evitar saltos
+                max_error = 0.03  # 3 cm
+                err_norm = np.linalg.norm(error_pos)
+                if err_norm > max_error and err_norm > 0.0:
+                    error_pos = error_pos * (max_error / err_norm)
+
+                # Control P lineal
+                vel_cmd = self.HOMING_P_GAIN * error_pos
+
+                # Limita velocidad máxima lineal
+                cmd_speed = np.linalg.norm(vel_cmd)
+                if cmd_speed > self.HOMING_MAX_SPEED and cmd_speed > 0.0:
+                    vel_cmd = vel_cmd * (self.HOMING_MAX_SPEED / cmd_speed)
+
+                # Suavizado exponencial lineal
+                vel_cmd = alpha * vel_cmd + (1 - alpha) * prev_vel_cmd
+                prev_vel_cmd = vel_cmd
+
+                # Publicar solo velocidad lineal; angular = 0
+                twist_msg.linear.x = float(vel_cmd[0])
+                twist_msg.linear.y = float(vel_cmd[1])
+                twist_msg.linear.z = float(vel_cmd[2])
+                twist_msg.angular.x = 0.0
+                twist_msg.angular.y = 0.0
+                twist_msg.angular.z = 0.0
+
+                twist_stamped_msg = TwistStamped()
+                twist_stamped_msg.header.stamp = rospy.Time.now()
+                twist_stamped_msg.twist = twist_msg
+
+                self.velocity_cmd_pub.publish(twist_stamped_msg)
+                rate.sleep()
+
+        except Exception as e:
+            rospy.logerr(f"Error durante el Velocity compliance: {e}")
+            return False
+
+        rospy.loginfo("Velocity compliance finalizado con parada suave.")
         return True
 
     def _handle_impedance_move(self, goal):
@@ -514,7 +626,6 @@ class Fr3ActionServer:
         trajectory_quat = slerp(time_steps)
         
         rate = rospy.Rate(frequency)
-        threshold = 0.03 # 3 cm
 
         # --- Ejecución de la Trayectoria ---
         rospy.loginfo("Ejecutando trayectoria...")
@@ -529,14 +640,21 @@ class Fr3ActionServer:
                 pose_msg = PoseStamped()
                 pose_msg.header.stamp = rospy.Time.now()
                 pose_msg.header.frame_id = "fr3_link0" # Asegúrate que este es el frame correcto
-                
+                send_orientation = SEND_ORIENTATION
                 pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z = trajectory_pos[i]
-                qx, qy, qz, qw = trajectory_quat[i].as_quat()
-                pose_msg.pose.orientation.x = qx
-                pose_msg.pose.orientation.y = qy
-                pose_msg.pose.orientation.z = qz
-                pose_msg.pose.orientation.w = qw
-                
+                if send_orientation == True:
+                    qx, qy, qz, qw = trajectory_quat[i].as_quat()
+                    pose_msg.pose.orientation.x = qx
+                    pose_msg.pose.orientation.y = qy
+                    pose_msg.pose.orientation.z = qz
+                    pose_msg.pose.orientation.w = qw
+                else:
+                    # compliance con la orientación actual
+                    pose_msg.pose.orientation.x = self.current_pose.pose.orientation.x
+                    pose_msg.pose.orientation.y = self.current_pose.pose.orientation.y
+                    pose_msg.pose.orientation.z = self.current_pose.pose.orientation.z
+                    pose_msg.pose.orientation.w = self.current_pose.pose.orientation.w
+
                 self.impedance_pose_pub.publish(pose_msg)
                 
                 # Feedback
@@ -564,7 +682,7 @@ class Fr3ActionServer:
         # El robot necesita tiempo físico para llegar al último punto enviado.
         rospy.loginfo("Trayectoria enviada. Esperando convergencia física (settling)...")
         
-        settling_timeout = 3.0 # Esperar máximo 3 segundos extra
+        settling_timeout = self.SETTLING_TIMEOUT  # Esperar máximo 5 segundos extra # TODO: especificar desde clase
         settling_start = rospy.Time.now()
         
         while (rospy.Time.now() - settling_start).to_sec() < settling_timeout:
@@ -583,14 +701,14 @@ class Fr3ActionServer:
             ])
             final_error = np.linalg.norm(goal_pos - current_pos_array)
             
-            if final_error < threshold:
+            if final_error < self.IMPEDANCE_POS_THRESHOLD:
                 rospy.loginfo(f"¡Objetivo alcanzado! Error final: {final_error:.4f} m")
                 return True
             
             rate.sleep()
 
         # Verificación final tras timeout
-        if final_error < threshold:
+        if final_error < self.IMPEDANCE_POS_THRESHOLD:
              return True
         else:
              rospy.logwarn(f"Tiempo de espera agotado. El robot no convergió. Error final: {final_error:.4f} m")
@@ -615,7 +733,9 @@ class Fr3ActionServer:
             'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
         ]
         point = JointTrajectoryPoint()
-        point.positions = [0, -0.785, 0, -2.355, 0, 1.571, 0.785]
+
+        point.positions = [0.10676028467221464, -1.3678683856596636, 0.012496290041675465, -1.9201111761277496, -0.17076796584204929, 1.7807022826911814, 0.9286978139315969]
+        # point.positions = [0, -0.785, 0, -2.355, 0, 1.571, 0.785] # home original
         point.velocities = [0, 0, 0, 0, 0, 0, 0]
         point.time_from_start = rospy.Duration(5.0) # TODO: Revisar si quiero especificar la duración en el mensaje. Dilema: velocidad vs tiempo
         traj_goal.goal.trajectory.points.append(point)

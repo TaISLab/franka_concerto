@@ -19,6 +19,7 @@ import actionlib
 from collections import deque
 
 # Mensajes
+# from scripts.franka_action_server import SEND_ORIENTATION
 import std_msgs.msg
 import franka_msgs.msg
 from skeleton_3d.msg import Skeleton3D
@@ -39,10 +40,19 @@ from franka_concerto.funciones_utiles import calculate_gripper_position_forearm_
 ROSBAG_PLAYING = False # Evitar usar timestamps del bag para filtrar datos antiguos
 APROX_BY_NORMAL_VECTOR = True # TRUE: vector normal False: qx=1, qy=qz=qw0 garra hacia abajo
 # Puntos de la tarea
-PT1 = [0.4,  0.0, 0.6] # Punto tarea 1
-PT2 = [0.4, 0.0, 0.4] # Punto tarea 2
-PT3 = [0.4, 0.0, 0.6] # Punto tarea 3
-PT4 = [0.4,  0.0, 0.4] # Punto tarea 4
+#PT = [  x,    y,   z,  qx,  qy,  qz,  qw]
+PT1 = [0.5,  0.1, 0.6, 0.8081340982843872, 0.022565281896738874, -0.2200372117133161, 0.5458828787839203] # Punto tarea 1
+PT2 = [0.5, -0.1, 0.6, 0.7251169616348931, 0.31263529720927524, -0.05099002847374373, 0.6114407028589963] # Punto tarea 2
+PT3 = [0.5, -0.1, 0.4, 0.7633577937585265, 0.15251687419930976, 0.06625908568030574, 0.6242021690316683] # Punto tarea 3
+PT4 = [0.5,  0.1, 0.4, 0.7327827194489618, -0.1386965034976775, -0.16083576138037187, 0.6464669462745654] # Punto tarea 
+
+
+# PT1 = [0.4,  0.1, 0.6, 0.7, -0.25, 0.0, 0.7] # Punto tarea 1
+# PT2 = [0.4, -0.1, 0.6, 0.7, 0.25, 0.0, 0.7] # Punto tarea 2
+# PT3 = [0.4, -0.1, 0.4, 0.7, 0.25, 0.0, 0.7] # Punto tarea 3
+# PT4 = [0.4,  0.1, 0.4, 0.7, -0.25, 0.0, 0.7] # Punto tarea 
+
+
 L1 = 0.3  # Longitud brazo humano (hombro-codo) aprox
 L2 = 0.3  # Longitud antebrazo humano (codo-muñeca) aprox
 
@@ -1310,6 +1320,7 @@ class PlanAndExecuteMultiPoint(py_trees.behaviour.Behaviour):
         self._done = False
         self._succeeded = False
         self.blackboard = py_trees.blackboard.Blackboard()
+        self.send_orientation = True  # Si true: puntos deben tener 7 elementos [x,y,z,qx,qy,qz,qw]
 
     def setup(self, timeout):
         self.client = actionlib.SimpleActionClient('fr3_motion_server', MoveFR3Action)
@@ -1356,12 +1367,22 @@ class PlanAndExecuteMultiPoint(py_trees.behaviour.Behaviour):
         goal.target_pose.pose.position.x = float(pt[0])
         goal.target_pose.pose.position.y = float(pt[1])
         goal.target_pose.pose.position.z = float(pt[2])
-        # placeholder orientation
-        goal.target_pose.pose.orientation.x = 1.0
-        goal.target_pose.pose.orientation.y = 0.0
-        goal.target_pose.pose.orientation.z = 0.0
-        goal.target_pose.pose.orientation.w = 0.0
+        
+        if self.send_orientation:
+            goal.target_pose.pose.orientation.x = float(pt[3])
+            goal.target_pose.pose.orientation.y = float(pt[4])
+            goal.target_pose.pose.orientation.z = float(pt[5])
+            goal.target_pose.pose.orientation.w = float(pt[6])
+        
+        else:
+            # placeholder orientation
+            goal.target_pose.pose.orientation.x = 1.0
+            goal.target_pose.pose.orientation.y = 0.0
+            goal.target_pose.pose.orientation.z = 0.0
+            goal.target_pose.pose.orientation.w = 0.0
+        
         goal.max_velocity = self.max_velocity
+
         try:
             self.client.send_goal(goal)
             self._goal_sent = True
@@ -1475,7 +1496,7 @@ def create_pre_checks_subtree():
     # ? (Selector) "Asegurar Garra Abierta"
     ensure_gripper_open = py_trees.composites.Selector(
         name="Asegurar Garra Abierta",
-        memory=True, # TODO: cambiar a variable BB
+        memory=True,
         children=[
             IsGripperOpen(),
             OpenGripper()
@@ -1487,7 +1508,7 @@ def create_pre_checks_subtree():
         name="Asegurar Pose Inicial",
         memory=True,
         children=[
-            IsAtHomePose(),
+            # IsAtHomePose(),
             GoToHome()
         ]
     )
@@ -1513,7 +1534,8 @@ def create_main_task_subtree():
         memory=True,
         children=[
             IsWristDataAvailable(),
-            IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10),
+            # IsWristStable(window_sec=2.0, pos_tol=0.01, ori_tol_deg=3.0, min_samples=10),
+            Timer(timeout=0.5),
             PlanAndApproach()
         ]
     )
@@ -1533,9 +1555,9 @@ def create_main_task_subtree():
         memory=True,
         children=[
             CloseGripper(),
-            Timer(timeout=2.0),
+            Timer(timeout=0.5),
             CallNNService(),
-            Timer(timeout=2.0),
+            Timer(timeout=0.5),
         ]
     )
 
@@ -1615,8 +1637,8 @@ def create_root():
         name="Attempt block",
         memory=False, # Memoria para la secuencia de tareas
         children=[
-            CancelIfPressCrossButton(),
-            pre_checks_subtree,
+            # CancelIfPressCrossButton(),
+            # pre_checks_subtree,
             main_task_subtree
         ]
     )

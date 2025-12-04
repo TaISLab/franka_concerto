@@ -81,9 +81,18 @@ goal:
 
 # Behaviour tree
 La nueva implementación consiste en un BT.
-Importante: franka_control y gripper_4f deben estar ejecutandose
+Importante: franka_control, gripper_4f, conv deben estar ejecutandose
 
 ```bash
+$ roslaunch skeleton_3d process_skeletons.launch use_rviz:=True
+$ roslaunch gripper_4f gripper_controller_franka_buttons.launch
+$ roslaunch franka_control franka_control.launch
 $ roslaunch franka_concerto bt.launch
+$ roslaunch gripper_4f conv_lstm_inferir.launch
 ```
 
+Para depurar el arbol: 
+```bash
+py-trees-blackboard-watcher --snapshot
+
+```
