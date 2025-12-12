@@ -1,0 +1,13 @@
+rosbag_path: "/home/asensioh/Escritorio/rosbags/optitrack/occlusions/rodri_occlusion_opti_1_filtered.bag"
+rosbag_start_time: 1764591188.125251
+delay_optitrack_sec: 3.5 # Se asume (+) por defecto
+optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/rodri_occlusion_1_processed.csv"
+
+# Parámetros antropométricos
+d: 0.08
+l1: 0.34
+l2: 0.27
+
+checks:
+  optitrack_csv_processed: true
+  rosbag_filtered: true

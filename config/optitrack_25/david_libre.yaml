@@ -1,0 +1,17 @@
+rosbag_path: "/home/asensioh/Escritorio/rosbags/optitrack/libre/david_libre_opti_1_filtered.bag"
+rosbag_start_time: 1764678233.11
+
+delay_optitrack_sec: -4.5 
+
+optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/david_libre_opti_processed.csv"
+
+# Parámetros antropométricos
+d: 0.07
+l1: 0.285
+l2: 0.25
+
+checks:
+  optitrack_csv_processed: true
+  rosbag_filtered: true
+
+experiment_notes: "Movimiento de David libre. De pie. No interactua con franka/garra."

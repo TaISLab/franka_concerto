@@ -1,0 +1,14 @@
+rosbag_path: ""
+rosbag_start_time: 
+delay_optitrack_sec: 
+optitrack_csv_path: ""
+
+d: 
+l1: 
+l2: 
+
+checks:
+  optitrack_csv_processed: false
+  rosbag_filtered: false
+
+experiment_notes: ""

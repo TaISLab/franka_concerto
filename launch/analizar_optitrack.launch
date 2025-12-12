@@ -1,0 +1,35 @@
+<launch>
+    <arg name="subject" default="david_libre" />
+    <arg name="yaml_path" default="$(find franka_concerto)/config/optitrack_25/$(arg subject).yaml" />
+    
+    <arg name="record_bag" default="false" />
+    <arg name="play_optitrack" default="true" />
+
+    <group ns="exp_optitrack_25">
+        
+        <rosparam command="load" file="$(arg yaml_path)" />
+
+    </group>
+
+    <!-- launch skeleton -->
+    <include file="$(find skeleton_3d)/launch/process_skeletons_3d.launch" >
+        <arg name="use_rviz" value="true" />
+        <arg name="dynamic_reconfigure" value="true" />
+        <arg name="output" value="log" />
+    
+    </include>
+
+    <!-- rosbag play / rqt_bag -->
+    <node pkg="franka_concerto" type="open_rqt_bag.sh" name="abrir_rqt_bag" output="screen" />
+
+    <!-- Optitrack csv player -->
+    <group if="$(arg play_optitrack)">   
+        <node pkg="franka_concerto" type="optitrack_csv_player.py" name="optitrack_csv_player" output="screen"/>
+    </group>
+
+    <!-- rosbag record -->
+    <group if="$(arg record_bag)">
+        <node pkg="rosbag" type="record" name="rosbag_record" output="screen" args="-a -O /home/asensioh/Escritorio/rosbags/optitrack/occlusions/rodri_occlusion_fusion.bag" />
+    </group>
+
+</launch>

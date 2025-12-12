@@ -1,0 +1,14 @@
+rosbag_path: "/home/asensioh/Escritorio/rosbags/optitrack/occlusions/jesus_occlusion_opti_1_filtered.bag"
+rosbag_start_time: 1764331741.206945
+delay_optitrack_sec: -5.6
+optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/jesus_occlusion_wrist_1_processed.csv"
+
+d: 0.08
+l1: 0.30
+l2: 0.30
+
+checks:
+  optitrack_csv_processed: true
+  rosbag_filtered: true
+
+experiment_notes: ""
