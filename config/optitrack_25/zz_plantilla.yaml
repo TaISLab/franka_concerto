@@ -1,6 +1,6 @@
 rosbag_path: ""
 rosbag_start_time: 
-delay_optitrack_sec: 
+delay_optitrack_sec: # Delay es un offset temporal. Ejemplo: Para delay -4, si empezaba en 0, ahora empieza en -4.0. 
 optitrack_csv_path: ""
 
 d: 

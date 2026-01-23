@@ -1,0 +1,36 @@
+rosbag_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/rosbags/task/jesus_task_opti_1_filtered.bag"
+rosbag_start_time: 1764332424.293284
+delay_optitrack_sec: 8.3
+optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/jesus_task_1_003_reconstructed_wrist.csv"
+
+d: 0.08
+l1: 0.297 # revisar
+l2: 0.28 # revisar
+grasp_offset: 0.07 # 0.1
+l_grasp_to_elbow: 0.217
+
+checks:
+  optitrack_csv_processed: true
+  rosbag_filtered: false
+  rosbag_skeleton_reconstructed: false
+  wrist_reconstructed: true
+
+optipoints:
+  primitives: true # elbow_1, elbow_2, lshoulder_1, lshoulder_2, rshoulder_1, rshoulder_2, stick_1, stick_2
+  new_wrist: true #wrist_mod. Nuevo wrist
+  
+
+
+timestamps:
+  sync_move: 1764332438.275112 #13.981828
+  init_gross_motion: 1764332442.868353 #18.575069
+  start_partial_occlusion: 1764332448.062351 #23.769067
+  init_approach_phase: 1764332453.747025 #29.453741
+  start_grasp: 1764332458.979566 #34.686282
+#   start_square_phase:
+  end_grasp: 1764332478.445654 #54.152370
+  end_task: 1764332481.185246 #56.891962
+  end_occlusion: 1764332483.011410
+  homing_completed: 1764332486.044128 #61.750844
+
+# experiment_notes: ""

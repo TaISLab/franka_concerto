@@ -1,0 +1,27 @@
+rosbag_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/rosbags/task/rodri_task_opti_1_filtered.bag"
+rosbag_start_time: 1764590929.015522
+delay_optitrack_sec: -4.3
+optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/rodri_task_1_003_processed.csv"
+
+d: 0.08
+l1: 0.32 # revisar
+l2: 0.27 # revisar
+
+checks:
+  optitrack_csv_processed: true
+  rosbag_filtered: true
+  rosbag_skeleton_reconstructed: false
+
+timestamps:
+  sync_move: 1764590937.078137 #8.062615
+  init_gross_motion: 1764590941.005561 #11.990039
+  start_partial_occlusion: 1764590950.806811 #21.791289
+  init_approach_phase: 1764590963.872244 #34.856722
+  start_grasp:  1764590969.905531 #40.890009
+  start_square_phase: 1764590973.662649 #44.647127
+  end_grasp: 1764590989.474171 #60.458650
+  end_task: 1764590991.855230 #62.839709
+  # end_occlusion: 
+  homing_completed: 1764590997.132050 #68.116529
+
+experiment_notes: ""

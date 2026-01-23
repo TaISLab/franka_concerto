@@ -6,6 +6,7 @@ import os
 import bisect
 from geometry_msgs.msg import PointStamped
 from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import Float64
 
 class OptitrackPlayer:
     def __init__(self):
@@ -40,6 +41,7 @@ class OptitrackPlayer:
         rospy.loginfo(f"📡 Creando publishers para {len(self.joints_map)} articulaciones encontradas.")
         self.point_pubs = {name: rospy.Publisher(f'/optitrack/{name}', PointStamped, queue_size=1) for name in self.joints_map}
         self.marker_pub = rospy.Publisher('/optitrack/markers', MarkerArray, queue_size=1)
+        self.q5_pub = rospy.Publisher('/optitrack/q5', Float64, queue_size=1)
         
     def load_csv_and_build_map(self):
         rospy.loginfo(f"📥 Cargando y analizando CSV: {self.csv_path}")
@@ -55,6 +57,12 @@ class OptitrackPlayer:
                 # Construir mapa de índices
                 self.joints_map = self.find_indices_from_header(header)
 
+                # Buscar índice de q5
+                if "q5" in header:
+                    self.q5_index = header.index("q5")
+                else:
+                    rospy.logwarn("Columna 'q5' no encontrada en el CSV.")
+                
                 # B) LEER DATOS
                 for row in reader:
                     try:
@@ -160,6 +168,7 @@ class OptitrackPlayer:
             
             row = self.data_rows[idx]
             self.publish_data(row, sim_now)
+            self.publish_q5(row, sim_now)
 
             rate.sleep()
         print("\n🛑 Nodo detenido.")
@@ -200,11 +209,21 @@ class OptitrackPlayer:
             marker.pose.orientation.w = 1.0
             marker.scale.x = 0.02; marker.scale.y = 0.02; marker.scale.z = 0.02
             marker.color.a = 1.0; marker.color.r = 0.0; marker.color.g = 1.0; marker.color.b = 0.0
-            marker.lifetime = rospy.Duration(0.02)
+            # marker.lifetime = rospy.Duration(0.02)
             marker_array.markers.append(marker)
             id_counter += 1
 
         self.marker_pub.publish(marker_array)
+
+    def publish_q5(self, row, stamp):
+        if self.q5_index is not None:
+            try:
+                q5_val = float(row[self.q5_index])
+                msg = Float64()
+                msg.data = q5_val  # Mantener en grados
+                self.q5_pub.publish(msg)
+            except (IndexError, ValueError):
+                pass
 
 if __name__ == '__main__':
     try:

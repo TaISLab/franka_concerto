@@ -1,0 +1,59 @@
+optitrack_nov_25:
+  # --- LEYENDA Y DEFINICIONES ---
+  # OFFSET TIEMPO:
+  # (+) Adelantar Optitrack respecto al bag
+  # (-) Retrasar Optitrack 
+  #
+  # d:  Distancia entre stick y muñeca [m]
+  # l1: Longitud brazo [m]
+  # l2: Longitud antebrazo [m]
+
+  david_libre:
+    rosbag_path: "/home/asensioh/rosbags/optitrack/libre/david_libre_opti_1_filtered.bag"
+    rosbag_start_time: 1764678233.11
+    
+    delay_optitrack_sec: -4.5 
+    
+    optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/david_libre_opti_processed.csv"
+
+    # Parámetros antropométricos
+    d: 0.07
+    l1: 0.285
+    l2: 0.25
+
+    checks:
+      optitrack_csv_processed: true
+    
+    experiment_notes: "Movimiento de David libre. De pie. No interactua con franka/garra."
+
+  rodri_occlusion:
+    rosbag_path: "/home/asensioh/rosbags/optitrack/occlusion/rodri_occlusion_opti_1_filtered.bag"
+    rosbag_start_time: 1764591188.125251
+    delay_optitrack_sec: 3.5 # Se asume (+) por defecto
+    optitrack_csv_path: "/media/asensioh/PortableSSD/Experimento nov 2025 optitrack/pc_imech/rodri_occlusion_1_processed.csv"
+
+    # Parámetros antropométricos
+    d: 0.08
+    l1: 0.34
+    l2: 0.27
+
+    checks:
+      optitrack_csv_processed: true
+    
+    experiment_notes: "Rodrigo con oclusion. De pie. Interactua con franka/garra. Optitrack se pierde a partir de la mitad del experimento."
+
+
+  plantilla:
+    rosbag_path: ""
+    rosbag_start_time: 
+    delay_optitrack_sec: 
+    optitrack_csv_path: ""
+
+    d: 
+    l1: 
+    l2: 
+
+    checks:
+      optitrack_csv_processed: false
+    
+    experiment_notes: ""

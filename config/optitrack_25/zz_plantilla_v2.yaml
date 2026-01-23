@@ -1,0 +1,38 @@
+rosbag_path: ""
+rosbag_start_time: 
+delay_optitrack_sec:  # Delay es un offset temporal. Ejemplo: Para delay -4, si empezaba en 0, ahora empieza en -4.0. 
+optitrack_csv_path: ""
+
+d:
+l1:  # revisar
+l2:  # revisar
+grasp_offset:  # 0.1
+l_grasp_to_elbow: 
+
+checks:
+  optitrack_csv_processed: 
+  rosbag_filtered: 
+  rosbag_skeleton_reconstructed:
+  elbow_1_reconstructed:
+  elbow_2_reconstructed:
+  wrist_reconstructed:
+
+optipoints:
+  primitives:  # elbow_1, elbow_2, lshoulder_1, lshoulder_2, rshoulder_1, rshoulder_2, stick_1, stick_2
+  new_wrist:  #wrist_mod. Nuevo wrist
+  
+
+
+timestamps:
+  sync_move: 
+  init_gross_motion: 
+  start_partial_occlusion: 
+  init_approach_phase: 
+  start_grasp:
+#   start_square_phase:
+  end_grasp: 
+  end_task: 
+  end_occlusion: 
+  homing_completed: 
+
+# experiment_notes: ""
